@@ -195,7 +195,7 @@
 - **Container:** portainer/portainer-ce:latest (port 9443)
 - **Volume:** portainer_data (persistent data)
 
-#### WordPress (CyberFlight Website) — MIGRATED TO GOOGLE CLOUD
+#### WordPress (CyberFlight Website — Production) — Google Cloud
 
 - **Web UI:** https://cyberflight.rpc-cyberflight.com
 - **Hosting:** Google Cloud Compute Engine (project: cyberflight-web)
@@ -204,10 +204,11 @@
 - **SSL:** Let's Encrypt via Certbot (auto-renews, expires 2026-06-14)
 - **Compose:** /opt/wordpress/docker-compose.yml (on GCE VM)
 - **Containers:**
-  - `wordpress-wordpress-1` — wordpress:latest (port 8181→80)
+  - `wordpress-wordpress-1` — wordpress:latest (port 127.0.0.1:8181→80, localhost-bound)
   - `wordpress-db-1` — mariadb:10.11
 - **Reverse Proxy:** Nginx on GCE VM with SSL termination
-- **Admin:** admin / (see secrets vault)
+- **Credentials:** .env file at /opt/wordpress/.env (0600 root:root), referenced via env_file in compose
+- **Admin:** ron / (see secrets vault)
 - **Theme:** Astra (dark custom CSS)
 - **Site title:** Ron Craighead's CyberFlight
 - **Tagline:** Cybersecurity | AI Infrastructure | Compliance
@@ -216,7 +217,7 @@
 - **Nav menu:** Home | AI/CyberLab | Aviation | Blog | About Ron | LinkedIn
 - **DNS:** cyberflight A → 34.182.15.235 (Google Domains + CADC01)
 - **GitHub:** https://github.com/rpcraighead/cyberflight-website
-- **Note:** Original WordPress on cainfra01 (/home/ron/wordpress/) is still running but no longer in use
+- **Dev site:** http://10.0.8.121:8181 (cainfra01, /home/ron/wordpress/) — local dev/staging instance
 
 #### N499CP Flight Planner — Google Cloud Run
 
@@ -283,4 +284,67 @@ All devices are monitored via LibreNMS at http://10.0.8.121:8000.
 Net-SNMP Windows binaries are unavailable for recent versions.
 Mitigations: 32-char random community string, queries accepted only from 10.0.8.121
 (LibreNMS), on an isolated 10.0.8.0/24 DMZ network.
+
+## Security Hardening
+
+### Credential Management
+
+- All plaintext credentials removed from LAB.md and docker-compose files (2026-03-16)
+- Secrets referenced as `(see secrets vault)` — actual values stored in `.env` files on each host
+- `.env` files permissions: `0600 root:root` (owner-read only)
+- Docker Compose files use `env_file:` or `${VARIABLE}` references instead of inline passwords
+- See [SECRETS_VAULT_README.md](SECRETS_VAULT_README.md) for secret locations and rotation schedule
+
+### GCP VM Hardening (cyberflight-wp)
+
+| Control | Configuration | Date |
+|---------|--------------|------|
+| **Firewall — RDP** | `default-allow-rdp` rule deleted (tcp:3389 was open to 0.0.0.0/0) | 2026-03-16 |
+| **Firewall — SSH** | `default-allow-ssh` restricted to home IP (108.247.32.130/32) + GCP IAP (35.235.240.0/20) | 2026-03-16 |
+| **Docker port binding** | WordPress port 8181 bound to `127.0.0.1` only (not 0.0.0.0) — prevents bypass of nginx/SSL | 2026-03-16 |
+| **fail2ban** | 3 jails active: `sshd` (3 attempts, 7200s ban), `wordpress` (5 attempts, 3600s ban), `nginx-http-auth` (5 attempts, 3600s ban) | 2026-03-16 |
+| **UFW** | Host firewall enabled — default deny incoming, allow 22/80/443 tcp only | 2026-03-16 |
+| **SSL/TLS** | Let's Encrypt certificate with auto-renewal via Certbot; HTTP→HTTPS redirect enforced by nginx | 2026-03-16 |
+| **Unattended upgrades** | Ubuntu automatic security patching enabled | default |
+
+**Note:** If home IP changes (dynamic ISP), update the SSH firewall rule:
+```bash
+gcloud compute firewall-rules update default-allow-ssh \
+  --project=cyberflight-web \
+  --source-ranges="NEW_IP/32,35.235.240.0/20"
+```
+GCP IAP range (35.235.240.0/20) provides fallback SSH access via the GCP Console.
+
+### Public Exposure Redaction
+
+All publicly accessible content has been scrubbed of internal network details (2026-03-16):
+
+| Control | Scope | Detail |
+|---------|-------|--------|
+| **WordPress IP redaction** | All 8 pages/posts containing private IPs | `192.168.x.y` addresses replaced with `192.168.x.x` (last two octets masked) |
+| **draw.io diagram (public)** | `lab-network-public.drawio` | All IPs, ports, subnet ranges, MAC addresses, and device-specific hostnames removed |
+| **WordPress diagram upload** | Network Architecture page (post ID 21) | Uses redacted PNG export; no internal IPs visible |
+| **GitHub repos** | `labinfra` (private), `cyberflight-website` (public), `flight-planner-n499cp-v2` (public) | `labinfra` is private; public repos contain no internal IPs or credentials |
+| **LAB.md credential scrub** | All credentials in LAB.md | Replaced with `(see secrets vault)` references |
+| **Public DNS servers preserved** | 8.8.8.8, 9.9.9.9 | Well-known public IPs left unredacted on website |
+
+**Files:**
+
+- Internal (full detail): `lab-network.drawio` — private `labinfra` repo only
+- Public (redacted): `lab-network-public.drawio` + PNG export on WordPress
+
+### Remaining Risk Register
+
+| # | Risk | Severity | Status |
+|---|------|----------|--------|
+| 1 | Root SSH as default access (cainfra01, Proxmox, router) | High | Open |
+| 2 | Single SSH key (id_claude) across all hosts | High | Open |
+| 3 | No TLS on internal services (PrivacyIDEA MFA, LDAP bind, nginx vhosts) | High | Open |
+| 4 | OpenSearch security plugin disabled (Graylog) | High | Open |
+| 5 | Flat DMZ — Kali on same subnet as domain controllers | Medium | Open |
+| 6 | Windows Server 2019 Evaluation expiration | Medium | Open |
+| 7 | WireGuard VPN has no MFA | Low | Open |
+| 8 | No log forwarding from GCP VM to Graylog | Low | Open |
+| 9 | Docker containers running as root (cainfra01) | Low | Open |
+| 10 | SNMPv2c cleartext on Windows DCs and router | Medium | Accepted |
 
