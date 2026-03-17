@@ -249,7 +249,7 @@
 - **Model:** nvidia/moonshotai/kimi-k2.5 (via NVIDIA NIM API, openai-completions)
 - **Fallback models:** ollama/qwen3:8b-nothink (on BigBrain at 10.0.8.50)
 - **Skills:** gog (Google Workspace CLI — Gmail/Calendar read-only for rpcraighead@gmail.com)
-- **Container env:** GOG_KEYRING_PASSWORD=openclaw
+- **Container env:** GOG_KEYRING_PASSWORD=(see secrets vault)
 - **Note:** After container recreation, re-symlink gog: `ln -sf /home/node/.openclaw/bin/gog /home/node/.local/bin/gog`
 
 ## SNMP Monitoring
