@@ -1,0 +1,55 @@
+site_name: CyberFlight
+site_description: Where Aviation Meets Cybersecurity
+site_url: http://cyberflight.rpc-cyberflight.com
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: indigo
+    accent: cyan
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - toc.integrate
+    - search.highlight
+
+nav:
+  - Home: index.md
+  - About: about.md
+  - Aviation:
+    - Discovery & Principles of Flight: aviation/discovery.md
+    - Flight Simulation Program: aviation/simulation.md
+    - Flight Training Resources: aviation/training.md
+    - Video Library: aviation/videos.md
+  - CyberLab:
+    - Lab Overview: cyberlab/overview.md
+    - Infrastructure:
+      - Network Architecture: cyberlab/infrastructure/network.md
+      - Proxmox Cluster: cyberlab/infrastructure/proxmox.md
+      - Active Directory & DNS: cyberlab/infrastructure/active-directory.md
+      - Monitoring Stack: cyberlab/infrastructure/monitoring.md
+    - Projects:
+      - PKI Certificate Services: cyberlab/projects/pki.md
+      - Windows Endpoint Management: cyberlab/projects/intune.md
+      - Smart Home Infrastructure: cyberlab/projects/smarthome.md
+      - Digital Twin Flight Sim: cyberlab/projects/agast.md
+      - Kali Security Lab: cyberlab/projects/kali.md
+  - Blog:
+    - Build Log:
+      - "One Old PC: Installing Proxmox": blog/build-log/01-one-old-pc.md
+      - "Active Directory in Your Living Room": blog/build-log/02-active-directory.md
+      - "See Everything: LibreNMS & Graylog": blog/build-log/03-monitoring-stack.md
+
+markdown_extensions:
+  - tables
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - attr_list
+  - md_in_html
