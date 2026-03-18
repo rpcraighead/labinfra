@@ -14,6 +14,18 @@
 - **SSH:** root@10.0.50.1 (key auth via /etc/dropbear/authorized_keys)
 - **DMZ DHCP:** Disabled (moved to CADC01)
 - **LAN DHCP:** Active (10.0.50.100–250, 12h lease)
+- **WireGuard Server:** wgserver interface, port 51820
+  - Tunnel subnet: 10.0.0.0/24
+  - Router tunnel IP: 10.0.0.1
+  - Peers:
+    | Peer | Tunnel IP | Purpose |
+    |------|-----------|---------|
+    | Ron mobile | 10.0.0.4 | Remote access |
+    | Ron desktop | 10.0.0.3 | Remote access |
+    | (unused) | 10.0.0.2 | Reserved |
+    | cyberflight-wp (GCP) | 10.0.0.5 | Site-to-site: log forwarding, SNMP monitoring |
+  - Firewall zones: wgserver↔dmz forwarding enabled (bidirectional), wgserver→wan forwarding enabled
+  - DMZ route: cainfra01 has persistent route `10.0.0.0/24 via 10.0.8.1` for tunnel access
 
 ## Active Directory Domain
 
@@ -88,7 +100,8 @@
 | docs | CNAME | cainfra01.rpc-cyberflight.com |
 | mfa | CNAME | cainfra01.rpc-cyberflight.com |
 | portainer | CNAME | cainfra01.rpc-cyberflight.com |
-| cyberflight | A | 34.182.15.235 (Google Cloud) |
+| git | CNAME | cainfra01.rpc-cyberflight.com |
+| cyberflight | A | 34.168.189.230 (Google Cloud) |
 | flightplanner | CNAME | ghs.googlehosted.com (Google Cloud Run) |
 
 #### DHCP Reservations
@@ -114,7 +127,7 @@
 - **Platform:** QEMU VM (2 vCPU, 7.5 GB RAM, 70 GB disk)
 - **SSH:** root@10.0.8.121 (key auth)
 - **Container runtime:** Docker
-- **Compose locations:** /opt/librenms/, /opt/graylog/, /opt/homarr/, /opt/mkdocs/, /opt/nginx-proxy/, /opt/privacyidea/, /opt/portainer/, /home/ron/wordpress/
+- **Compose locations:** /opt/librenms/, /opt/graylog/, /opt/homarr/, /opt/mkdocs/, /opt/nginx-proxy/, /opt/privacyidea/, /opt/portainer/, /home/ron/wordpress/, /home/ron/gitea/
 
 #### Nginx Reverse Proxy
 
@@ -128,6 +141,7 @@
   - docs.rpc-cyberflight.com → MkDocs (8000)
   - mfa.rpc-cyberflight.com → PrivacyIDEA (8080)
   - portainer.rpc-cyberflight.com → Portainer (9443)
+  - git.rpc-cyberflight.com → Gitea (3000)
   - cyberflight.rpc-cyberflight.com → (migrated to Google Cloud, vhost can be removed)
 - **Default:** redirects to dashboard.rpc-cyberflight.com
 
@@ -195,12 +209,27 @@
 - **Container:** portainer/portainer-ce:latest (port 9443)
 - **Volume:** portainer_data (persistent data)
 
+#### Gitea (Git Server)
+
+- **Web UI:** http://git.rpc-cyberflight.com (direct: http://10.0.8.121:3000)
+- **Compose:** /home/ron/gitea/docker-compose.yml
+- **Container:** gitea/gitea:latest (ports 3000 HTTP, 2222 SSH)
+- **Database:** SQLite3
+- **ROOT_URL:** http://git.rpc-cyberflight.com/
+- **Registration:** Disabled (admin creates accounts)
+- **Admin:** ron / (see secrets vault)
+- **Agent user:** agent (read-only API access for lab agents)
+- **Repositories:**
+  - `ron/labinfra` — Lab infrastructure documentation (mirrored from local)
+- **DNS:** git.rpc-cyberflight.com → CNAME to cainfra01.rpc-cyberflight.com (CADC01 + AdGuardHome rewrite)
+- **Network:** Connected to nginx-proxy_proxy Docker network for reverse proxy access
+
 #### WordPress (CyberFlight Website — Production) — Google Cloud
 
 - **Web UI:** https://cyberflight.rpc-cyberflight.com
 - **Hosting:** Google Cloud Compute Engine (project: cyberflight-web)
 - **VM:** cyberflight-wp (e2-small, Ubuntu 24.04, us-west1-b)
-- **External IP:** 34.182.15.235
+- **External IP:** 34.168.189.230
 - **SSL:** Let's Encrypt via Certbot (auto-renews, expires 2026-06-14)
 - **Compose:** /opt/wordpress/docker-compose.yml (on GCE VM)
 - **Containers:**
@@ -215,9 +244,21 @@
 - **WP-CLI:** Installed in wordpress container (`wp --allow-root`)
 - **Pages:** Home, About Ron (CISSP/AIGP), AI/CyberLab, Aviation, Blog, infrastructure sub-pages, project sub-pages
 - **Nav menu:** Home | AI/CyberLab | Aviation | Blog | About Ron | LinkedIn
-- **DNS:** cyberflight A → 34.182.15.235 (Google Domains + CADC01)
+- **DNS:** cyberflight A → 34.168.189.230 (Google Domains + CADC01)
 - **GitHub:** https://github.com/rpcraighead/cyberflight-website
 - **Dev site:** http://10.0.8.121:8181 (cainfra01, /home/ron/wordpress/) — local dev/staging instance
+- **WireGuard tunnel:** wg0 interface, tunnel IP 10.0.0.5/24, endpoint 108.247.32.130:51820 (home router)
+  - AllowedIPs: 10.0.0.0/24, 10.0.8.0/24 (full lab access over tunnel)
+  - PersistentKeepalive: 25s
+  - Auto-starts on boot (systemd wg-quick@wg0)
+- **Log forwarding:** rsyslog → Graylog at 10.0.8.121:1514 (syslog UDP over WireGuard tunnel)
+  - System logs: all facilities/severities
+  - Nginx access/error logs: via imfile module (tagged nginx-access, nginx-error)
+  - Config: /etc/rsyslog.d/60-graylog.conf, /etc/rsyslog.d/61-nginx.conf
+- **SNMP:** SNMPv3 (authPriv: SHA + AES), listening on 10.0.0.5:161 (WireGuard only)
+  - User: librenms (same credentials as lab hosts)
+  - Monitored by LibreNMS as device "cyberflight-wp (GCP)"
+  - Disk, process (dockerd, nginx), and load monitoring enabled
 
 #### N499CP Flight Planner — Google Cloud Run
 
@@ -241,17 +282,38 @@
 - **MAC:** xx:xx:xx:xx:xx:xx
 - **Role:** TP-Link managed switch
 
-## OpenClaw (ClawBot)
+## OpenClaw (Ralph the Raccoon)
 
-- **Host:** 10.0.8.10 (runs as user `openclaw`)
+- **Host:** RonClaw (10.0.8.10), runs as user `openclaw`
 - **Container:** Podman rootless (ghcr.io/openclaw/openclaw:latest)
-- **Ports:** 18789, 18790
+- **Ports:** 18789 (gateway), 18790, 18791 (browser control)
 - **Telegram Bot:** @RonBot247_bot
-- **Model:** nvidia/moonshotai/kimi-k2.5 (via NVIDIA NIM API, openai-completions)
-- **Fallback models:** ollama/qwen3:8b-nothink (on BigBrain at 10.0.8.50)
-- **Skills:** gog (Google Workspace CLI — Gmail/Calendar read-only for rpcraighead@gmail.com)
+- **Model:** anthropic/claude-haiku-4-5-20251001 (Anthropic API)
+- **Alternative models:** nvidia/moonshotai/kimi-k2.5 (NVIDIA NIM API), ollama/qwen3:8b-nothink (on BigBrain at 10.0.8.50)
+- **Built-in skills:** gog (Google Workspace CLI — Gmail/Calendar read-only for rpcraighead@gmail.com)
 - **Container env:** GOG_KEYRING_PASSWORD=(see secrets vault)
 - **Note:** After container recreation, re-symlink gog: `ln -sf /home/node/.openclaw/bin/gog /home/node/.local/bin/gog`
+
+### Custom Sysadmin Skills
+
+Skills live at `/home/openclaw/.openclaw/custom-skills/` and must be **copied** (not symlinked) into `/app/skills/` inside the container. After any container restart, run:
+```bash
+podman exec openclaw /home/node/.openclaw/custom-skills/install-skills.sh
+```
+
+| Skill | Description |
+|-------|-------------|
+| proxmox | Proxmox VE cluster management via REST API (token: root@pam!ralph-agent) |
+| lab-infra | SSH to hosts, DNS (AdGuardHome), Gitea API, LibreNMS/Graylog queries |
+| containers | Docker on cainfra01, Podman on RonClaw, nginx reverse proxy management |
+
+### Restart Procedure
+
+**Always use the restart script** instead of `podman restart`:
+```bash
+sudo /home/openclaw/restart-ralph.sh
+```
+This script stops the container, waits 35s for any stale Telegram long-poll to expire, clears pending updates, starts the container, and reinstalls custom skills. Direct `podman restart` causes a Telegram 409 Conflict because the old getUpdates long-poll (30s timeout) is still active when the new instance starts polling.
 
 ## SNMP Monitoring
 
@@ -267,6 +329,7 @@ All devices are monitored via LibreNMS at http://10.0.8.121:8000.
 | cainfra01 | 10.0.8.121 | librenms | SHA | AES |
 | RonClaw | 10.0.8.10 | librenms | SHA | AES |
 | bigbrain | 10.0.8.50 | librenms | SHA | AES |
+| cyberflight-wp (GCP) | 10.0.0.5 | librenms | SHA | AES |
 
 - **Auth password:** (see secrets vault)
 - **Priv password:** (see secrets vault)
@@ -344,7 +407,7 @@ All publicly accessible content has been scrubbed of internal network details (2
 | 5 | Flat DMZ — Kali on same subnet as domain controllers | Medium | Open |
 | 6 | Windows Server 2019 Evaluation expiration | Medium | Open |
 | 7 | WireGuard VPN has no MFA | Low | Open |
-| 8 | No log forwarding from GCP VM to Graylog | Low | Open |
+| 8 | No log forwarding from GCP VM to Graylog | Low | **Resolved** — rsyslog + WireGuard tunnel (2026-03-17) |
 | 9 | Docker containers running as root (cainfra01) | Low | Open |
 | 10 | SNMPv2c cleartext on Windows DCs and router | Medium | Accepted |
 
