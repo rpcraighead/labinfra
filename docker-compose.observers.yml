@@ -1,0 +1,110 @@
+# Agent Swarm - Phase 4: Observer agents (Monitor, Scribe, Judge)
+# Extends infra + conductor + agents with independent observers.
+#
+# Usage:
+#   docker compose -f docker-compose.infra.yml -f docker-compose.conductor.yml \
+#     -f docker-compose.agents.yml -f docker-compose.observers.yml up -d
+
+services:
+  monitor:
+    build:
+      context: ./agents
+      dockerfile: monitor/Dockerfile
+    container_name: monitor-observer
+    environment:
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      OLLAMA_URL: ${OLLAMA_URL:-http://<BIGBRAIN_IP>:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b-nothink}
+      MAX_TASK_SECONDS: ${MAX_TASK_SECONDS:-120}
+      FAILURE_RATE_THRESHOLD: ${FAILURE_RATE_THRESHOLD:-0.5}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      AGENT_EMAIL: monitor@rpc-cyberflight.com
+      NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - swarm-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      conductor:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  scribe:
+    build:
+      context: ./agents
+      dockerfile: scribe/Dockerfile
+    container_name: scribe-logger
+    environment:
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      DATABASE_URL: postgresql://auditlog:${POSTGRES_PASSWORD}@postgres:5432/swarm_audit
+      OLLAMA_URL: ${OLLAMA_URL:-http://<BIGBRAIN_IP>:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b-nothink}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      AGENT_EMAIL: scribe@rpc-cyberflight.com
+      NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - swarm-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      conductor:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  judge:
+    build:
+      context: ./agents
+      dockerfile: judge/Dockerfile
+    container_name: judge-arbiter
+    environment:
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      OLLAMA_URL: ${OLLAMA_URL:-http://<BIGBRAIN_IP>:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b-nothink}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      AGENT_EMAIL: judge@rpc-cyberflight.com
+      NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - swarm-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      conductor:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  swarm-net:
+    external: true
+    name: agent-swarm_swarm-net

@@ -1,0 +1,377 @@
+version: '3.9'
+
+# Agent Swarm Architecture - Docker Compose Stack
+# Implements: Conductor, Superintendents, Mercury, DaVinci, Sapper, Monitor, Scribe, Gatekeeper
+
+services:
+  # ==================== SHARED INFRASTRUCTURE ====================
+  
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-service
+    runtime: nvidia
+    environment:
+      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_NUM_THREAD: "8"
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - swarm-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Message broker for async agent coordination
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq-broker
+    environment:
+      RABBITMQ_DEFAULT_USER: intent-broker
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-changeme}
+    ports:
+      - "5672:5672"      # AMQP
+      - "15672:15672"    # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - swarm-net
+    restart: unless-stopped
+
+  # Distributed cache / session store
+  redis:
+    image: redis:7-alpine
+    container_name: redis-cache
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - swarm-net
+    restart: unless-stopped
+
+  # Audit log database (time-series optimized)
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres-auditdb
+    environment:
+      POSTGRES_USER: auditlog
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: swarm_audit
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-audit-schema.sql:/docker-entrypoint-initdb.d/01-audit-schema.sql
+    networks:
+      - swarm-net
+    restart: unless-stopped
+
+  # ==================== GATEKEEPER (Access Control) ====================
+  
+  gatekeeper:
+    image: n8n/n8n:latest
+    container_name: gatekeeper-proxy
+    environment:
+      N8N_SECURE_COOKIE: "true"
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-changeme}
+      DB_TYPE: postgres
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_USER: auditlog
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      N8N_LISTEN_ADDRESS: 0.0.0.0
+      N8N_PORT: 5678
+    ports:
+      - "5678:5678"     # N8N UI
+      - "2222:22"       # SSH proxy (not standard, would use separate SSH proxy container)
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./gatekeeper-workflows:/home/node/.n8n/workflows
+    networks:
+      - swarm-net
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # SSH proxy for immutable access control (separate from N8N)
+  ssh-proxy:
+    image: linuxserver/openssh-server:latest
+    container_name: gatekeeper-ssh
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
+      PUBLIC_KEY_FILE: /config/keys/authorized_keys
+      LOG_STDOUT: "true"
+    ports:
+      - "2222:2222"
+    volumes:
+      - ./ssh-proxy-config:/config
+      - ssh_keys:/config/keys:ro
+    networks:
+      - swarm-net
+    restart: unless-stopped
+
+  # ==================== CONDUCTOR (Orchestrator) ====================
+  
+  conductor:
+    image: conductor:latest
+    build:
+      context: ./agents/conductor
+      dockerfile: Dockerfile
+    container_name: conductor-orchestrator
+    environment:
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD:-changeme}@rabbitmq/
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+      GATEKEEPER_URL: http://gatekeeper:5678
+      AUDIT_DB_URL: postgresql://auditlog:${POSTGRES_PASSWORD:-changeme}@postgres:5432/swarm_audit
+      CONDUCTOR_API_KEY: ${CONDUCTOR_API_KEY:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://<BIGBRAIN_IP>:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b-nothink}
+      LOG_LEVEL: INFO
+      AGENT_CONFIG: /etc/conductor/config.yaml
+    ports:
+      - "8000:8000"     # Conductor API
+    volumes:
+      - ./agents/conductor/config.yaml:/etc/conductor/config.yaml:ro
+      - conductor_state:/var/lib/conductor
+    networks:
+      - swarm-net
+    depends_on:
+      - rabbitmq
+      - redis
+      - postgres
+      - gatekeeper
+    restart: unless-stopped
+
+  # ==================== SUBAGENTS ====================
+  
+  superintendent:
+    image: superintendent:latest
+    build:
+      context: ./agents/superintendent
+      dockerfile: Dockerfile
+    container_name: superintendent-infra
+    environment:
+      CONDUCTOR_URL: http://conductor:8000
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD:-changeme}@rabbitmq/
+      GATEKEEPER_URL: http://gatekeeper:5678
+      PROXMOX_ENDPOINT: ${PROXMOX_ENDPOINT:-<BIGHOST_IP>}
+      SSH_KEY_PATH: /secrets/conductor_ssh_key
+      LOG_LEVEL: INFO
+    volumes:
+      - ./agents/superintendent/config.yaml:/etc/superintendent/config.yaml:ro
+      - ./secrets/conductor_ssh_key:/secrets/conductor_ssh_key:ro
+    networks:
+      - swarm-net
+    depends_on:
+      - conductor
+      - gatekeeper
+    restart: unless-stopped
+
+  mercury:
+    image: mercury:latest
+    build:
+      context: ./agents/mercury
+      dockerfile: Dockerfile
+    container_name: mercury-cloud
+    environment:
+      CONDUCTOR_URL: http://conductor:8000
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD:-changeme}@rabbitmq/
+      GATEKEEPER_URL: http://gatekeeper:5678
+      DOCKER_HOST: unix:///var/run/docker.sock
+      LOG_LEVEL: INFO
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./agents/mercury/config.yaml:/etc/mercury/config.yaml:ro
+    networks:
+      - swarm-net
+    depends_on:
+      - conductor
+      - gatekeeper
+    restart: unless-stopped
+
+  davinci:
+    image: davinci:latest
+    build:
+      context: ./agents/davinci
+      dockerfile: Dockerfile
+    container_name: davinci-code
+    environment:
+      CONDUCTOR_URL: http://conductor:8000
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD:-changeme}@rabbitmq/
+      GATEKEEPER_URL: http://gatekeeper:5678
+      CODE_REPO_URL: ${CODE_REPO_URL:-https://github.com/yourorg/iac}
+      LOG_LEVEL: INFO
+    volumes:
+      - davinci_workspace:/workspace
+      - ./secrets/github_ssh_key:/secrets/github_ssh_key:ro
+    networks:
+      - swarm-net
+    depends_on:
+      - conductor
+      - gatekeeper
+    restart: unless-stopped
+
+  sapper:
+    image: sapper:latest
+    build:
+      context: ./agents/sapper
+      dockerfile: Dockerfile
+    container_name: sapper-network
+    environment:
+      CONDUCTOR_URL: http://conductor:8000
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD:-changeme}@rabbitmq/
+      GATEKEEPER_URL: http://gatekeeper:5678
+      FIREWALL_ENDPOINT: ${FIREWALL_ENDPOINT:-<FIREWALL_IP>}
+      SSH_KEY_PATH: /secrets/conductor_ssh_key
+      LOG_LEVEL: INFO
+    volumes:
+      - ./agents/sapper/config.yaml:/etc/sapper/config.yaml:ro
+      - ./secrets/conductor_ssh_key:/secrets/conductor_ssh_key:ro
+    networks:
+      - swarm-net
+    depends_on:
+      - conductor
+      - gatekeeper
+    restart: unless-stopped
+
+  # ==================== INDEPENDENT OBSERVERS ====================
+  
+  monitor:
+    image: monitor:latest
+    build:
+      context: ./agents/monitor
+      dockerfile: Dockerfile
+    container_name: monitor-observer
+    environment:
+      OLLAMA_API_URL: http://ollama:11434
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD:-changeme}@rabbitmq/
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/1
+      AUDIT_DB_URL: postgresql://auditlog:${POSTGRES_PASSWORD:-changeme}@postgres:5432/swarm_audit
+      MONITOR_MODEL: llama2  # Could be mistral, neural-chat, etc
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://conductor:8000/alerts}
+      LOG_LEVEL: INFO
+    volumes:
+      - ./agents/monitor/config.yaml:/etc/monitor/config.yaml:ro
+      - monitor_state:/var/lib/monitor
+    networks:
+      - swarm-net
+    depends_on:
+      - ollama
+      - rabbitmq
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  scribe:
+    image: scribe:latest
+    build:
+      context: ./agents/scribe
+      dockerfile: Dockerfile
+    container_name: scribe-documentation
+    environment:
+      OLLAMA_API_URL: http://ollama:11434
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD:-changeme}@rabbitmq/
+      GIT_REPO_URL: ${GIT_REPO_URL:-https://github.com/yourorg/lab-docs}
+      SSH_KEY_PATH: /secrets/scribe_ssh_key
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/2
+      SCRIBE_MODEL: mistral
+      LOG_LEVEL: INFO
+    volumes:
+      - ./agents/scribe/config.yaml:/etc/scribe/config.yaml:ro
+      - ./secrets/scribe_ssh_key:/secrets/scribe_ssh_key:ro
+      - scribe_state:/var/lib/scribe
+    networks:
+      - swarm-net
+    depends_on:
+      - ollama
+      - rabbitmq
+      - redis
+    restart: unless-stopped
+
+  # ==================== JUDGE (Arbitration) - TBD ====================
+  
+  judge:
+    image: judge:latest
+    build:
+      context: ./agents/judge
+      dockerfile: Dockerfile
+    container_name: judge-arbiter
+    environment:
+      CONDUCTOR_URL: http://conductor:8000
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD:-changeme}@rabbitmq/
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/3
+      AUDIT_DB_URL: postgresql://auditlog:${POSTGRES_PASSWORD:-changeme}@postgres:5432/swarm_audit
+      GATEKEEPER_URL: http://gatekeeper:5678
+      LOG_LEVEL: INFO
+    volumes:
+      - ./agents/judge/config.yaml:/etc/judge/config.yaml:ro
+    networks:
+      - swarm-net
+    depends_on:
+      - conductor
+      - rabbitmq
+      - redis
+      - postgres
+      - gatekeeper
+    restart: unless-stopped
+
+  # ==================== OBSERVABILITY ====================
+  
+  # Optional: Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus-metrics
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - swarm-net
+    restart: unless-stopped
+
+  # Optional: Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    networks:
+      - swarm-net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+networks:
+  swarm-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  ollama_data:
+  rabbitmq_data:
+  redis_data:
+  postgres_data:
+  n8n_data:
+  ssh_keys:
+  conductor_state:
+  davinci_workspace:
+  monitor_state:
+  scribe_state:
+  prometheus_data:
+  grafana_data:
