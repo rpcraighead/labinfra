@@ -1,0 +1,13 @@
+# Grafana dashboard provisioning — auto-loads JSON dashboards from disk
+apiVersion: 1
+
+providers:
+  - name: 'Agent Swarm'
+    orgId: 1
+    folder: 'Agent Swarm'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

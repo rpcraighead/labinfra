@@ -1,6 +1,17 @@
 version: '3.9'
 
-# Agent Swarm Architecture - Docker Compose Stack
+# DEPRECATED — This monolithic compose file is superseded by the layered approach:
+#   docker-compose.infra.yml       Phase 1: RabbitMQ, Redis, Postgres, Gatekeeper
+#   docker-compose.conductor.yml   Phase 2: Conductor orchestrator
+#   docker-compose.agents.yml      Phase 3: Superintendent, Mercury, Sapper, DaVinci
+#   docker-compose.observers.yml   Phase 4: Monitor, Scribe, Judge
+#   docker-compose.monitoring.yml  Phase 5: Prometheus, Grafana
+#
+# Use: make up  (or see Makefile for individual phases)
+#
+# This file is kept for reference only. Do not use for deployment.
+
+# Agent Swarm Architecture - Docker Compose Stack (LEGACY)
 # Implements: Conductor, Superintendents, Mercury, DaVinci, Sapper, Monitor, Scribe, Gatekeeper
 
 services:

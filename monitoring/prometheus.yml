@@ -1,0 +1,49 @@
+# Prometheus scrape config for Agent Swarm
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Conductor metrics
+  - job_name: 'conductor'
+    static_configs:
+      - targets: ['conductor:8000']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # Monitor agent metrics (Prometheus counters/histograms)
+  - job_name: 'monitor'
+    static_configs:
+      - targets: ['monitor:8005']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # Agent health endpoints — scraped as up/down probes
+  - job_name: 'agent-health'
+    metrics_path: /health
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - 'superintendent:8001'
+          - 'mercury:8002'
+          - 'davinci:8003'
+          - 'sapper:8004'
+          - 'monitor:8005'
+          - 'scribe:8006'
+          - 'judge:8007'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '(.+):\d+'
+        target_label: agent
+        replacement: '${1}'
+
+  # RabbitMQ (management plugin exposes Prometheus metrics)
+  - job_name: 'rabbitmq'
+    static_configs:
+      - targets: ['rabbitmq:15692']
+    scrape_interval: 30s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
