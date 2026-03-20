@@ -9,10 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 agent
 WORKDIR /app
 
-COPY requirements.txt .
+COPY mercury/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=agent:agent . .
+COPY base.py /app/base.py
+COPY mercury/ /app/
 USER agent
 
 EXPOSE 8002

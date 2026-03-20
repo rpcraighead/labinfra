@@ -50,6 +50,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-112}"
     networks:
       - swarm-net
     depends_on:
