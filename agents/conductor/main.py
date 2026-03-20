@@ -683,6 +683,21 @@ AVAILABLE AGENTS:
 
 KNOWN ACTIONS (taskRouting):
 {', '.join(routes)}
+
+ACTION GUIDE (Sapper / OpenWrt router):
+- fw_list_rules, fw_list_zones, fw_list_redirects, fw_list_forwarding: read firewall config
+- fw_status: full firewall overview (zones + rules + redirects + forwarding + iptables)
+- fw_add_rule: create a new firewall traffic rule
+- fw_delete_rule: delete a firewall rule by name or section
+- fw_edit_rule: modify an existing rule (change target, port, source, etc.)
+- fw_move_rule: reorder a rule to a different position (params: name, position)
+- fw_add_redirect / fw_delete_redirect: manage port forwards (DNAT)
+- fw_add_forwarding: add zone-to-zone forwarding
+- fw_dhcp_leases: list active and static DHCP clients on the router
+- fw_logs: read router system/firewall logs (params: lines, filter)
+- ping_test: ping a target from the router (params: target)
+- network_status: show interfaces and routes on the router or a host
+- configure_network: configure IP on a LINUX HOST (NOT the router — use fw_* for OpenWrt)
 {context_block}
 INTENT JSON FORMAT:
 {{
