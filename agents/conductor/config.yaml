@@ -58,7 +58,11 @@ agents:
         - fw_add_redirect
         - fw_delete_redirect
         - fw_add_forwarding
+        - fw_edit_rule
+        - fw_move_rule
         - fw_list_forwarding
+        - fw_dhcp_leases
+        - fw_logs
         - network_status
         - ping_test
       maxConcurrentTasks: 2
@@ -245,6 +249,26 @@ taskRouting:
       task: fw_list_forwarding
       requiredConstraints: []
 
+  fw_edit_rule:
+    - agent: sapper
+      task: fw_edit_rule
+      requiredConstraints: []
+
+  fw_move_rule:
+    - agent: sapper
+      task: fw_move_rule
+      requiredConstraints: []
+
+  fw_dhcp_leases:
+    - agent: sapper
+      task: fw_dhcp_leases
+      requiredConstraints: []
+
+  fw_logs:
+    - agent: sapper
+      task: fw_logs
+      requiredConstraints: []
+
   network_status:
     - agent: sapper
       task: network_status
@@ -292,6 +316,8 @@ gatekeeper:
     - fw_add_redirect
     - fw_delete_redirect
     - fw_add_forwarding
+    - fw_edit_rule
+    - fw_move_rule
   timeout_seconds: 60
   reverifyInterval: 300
 

@@ -118,7 +118,12 @@ class SapperAgent(BaseAgent):
             'fw_add_redirect': self._fw_add_redirect,
             'fw_delete_redirect': self._fw_delete_redirect,
             'fw_add_forwarding': self._fw_add_forwarding,
+            'fw_edit_rule': self._fw_edit_rule,
+            'fw_move_rule': self._fw_move_rule,
             'fw_status': self._fw_status,
+            # Router info
+            'fw_dhcp_leases': self._fw_dhcp_leases,
+            'fw_logs': self._fw_logs,
             # Generic network (Linux hosts)
             'configure_network': self._configure_network,
             'update_firewall': self._update_firewall,
@@ -443,6 +448,209 @@ class SapperAgent(BaseAgent):
                 return section_key
 
         raise ValueError(f"{section_type} named '{name}' not found")
+
+    async def _fw_edit_rule(self, params: dict) -> dict:
+        """Edit an existing firewall rule by name or section.
+
+        Params:
+            name:       Rule name to find (required if no section)
+            section:    UCI section ID (e.g. '@rule[3]')
+            Any other param (src, dest, proto, dest_port, src_ip, dest_ip,
+            target, enabled, family, icmp_type) will be updated on the rule.
+        """
+        section = params.get('section')
+        name = params.get('name')
+
+        if not section and not name:
+            raise ValueError("name or section is required")
+
+        if not section:
+            section = await self._find_fw_section('rule', name)
+
+        option_map = {
+            'src': 'src', 'dest': 'dest', 'proto': 'proto',
+            'dest_port': 'dest_port', 'src_port': 'src_port',
+            'src_ip': 'src_ip', 'dest_ip': 'dest_ip',
+            'target': 'target', 'family': 'family', 'enabled': 'enabled',
+            'icmp_type': 'icmp_type', 'new_name': 'name',
+        }
+
+        uci_cmds = []
+        changed = []
+        for param_key, uci_key in option_map.items():
+            value = params.get(param_key)
+            if value is not None:
+                uci_cmds.append(
+                    f"uci set firewall.{section}.{uci_key}={shlex.quote(str(value))}"
+                )
+                changed.append(uci_key)
+
+        if not uci_cmds:
+            raise ValueError("No options to change — provide at least one field to edit")
+
+        cmd = ' && '.join(uci_cmds)
+        result = await self._uci_exec(cmd)
+        if result['exit_code'] != 0:
+            raise RuntimeError(f"Failed editing rule: {result['stderr']}")
+
+        await self._uci_commit_and_reload('firewall')
+
+        return {
+            "action": "edit_rule", "section": section, "name": name,
+            "changed": changed, "status": "applied",
+        }
+
+    async def _fw_move_rule(self, params: dict) -> dict:
+        """Move a firewall rule to a different position in the rule list.
+
+        UCI doesn't support native reorder, so this reads the rule,
+        deletes it, and re-adds it at the target position.
+
+        Params:
+            name:     Rule name to move (required if no section)
+            section:  UCI section (e.g. '@rule[33]')
+            position: Target position index (0-based, required)
+        """
+        section = params.get('section')
+        name = params.get('name')
+        position = params.get('position')
+
+        if position is None:
+            raise ValueError("position is required (0-based index)")
+        position = int(position)
+
+        if not section and not name:
+            raise ValueError("name or section is required")
+
+        if not section:
+            section = await self._find_fw_section('rule', name)
+
+        # Read the full rule first
+        rule_data = await self._uci_exec(f"uci show firewall.{section}")
+        if rule_data['exit_code'] != 0:
+            raise RuntimeError(f"Cannot read rule: {rule_data['stderr']}")
+
+        options = {}
+        for line in rule_data['stdout'].splitlines():
+            if '=' not in line:
+                continue
+            k, _, v = line.partition('=')
+            option = k.split('.')[-1]
+            if option in ('', '_type') or k.endswith(f'={section}'):
+                continue
+            options[option] = v.strip("'\"")
+
+        # Delete the rule
+        result = await self._uci_exec(f"uci delete firewall.{section}")
+        if result['exit_code'] != 0:
+            raise RuntimeError(f"Delete failed: {result['stderr']}")
+
+        # Re-add at target position using uci reorder
+        result = await self._uci_exec("uci add firewall rule")
+        if result['exit_code'] != 0:
+            raise RuntimeError(f"Re-add failed: {result['stderr']}")
+        new_section = result['stdout'].strip()
+
+        # Set all options back
+        uci_cmds = []
+        for opt, val in options.items():
+            uci_cmds.append(f"uci set firewall.{new_section}.{opt}={shlex.quote(val)}")
+
+        # Reorder to target position
+        uci_cmds.append(f"uci reorder firewall.{new_section}={position}")
+
+        cmd = ' && '.join(uci_cmds)
+        result = await self._uci_exec(cmd)
+        if result['exit_code'] != 0:
+            raise RuntimeError(f"Reorder failed: {result['stderr']}")
+
+        await self._uci_commit_and_reload('firewall')
+
+        return {
+            "action": "move_rule", "name": options.get('name', name),
+            "old_section": section, "new_section": new_section,
+            "position": position, "status": "applied",
+        }
+
+    async def _fw_dhcp_leases(self, params: dict) -> dict:
+        """List active DHCP leases from the OpenWrt router.
+
+        Reads /tmp/dhcp.leases which contains active leases.
+        """
+        result = await self._uci_exec("cat /tmp/dhcp.leases 2>/dev/null")
+        leases = []
+        if result['exit_code'] == 0 and result['stdout']:
+            for line in result['stdout'].splitlines():
+                parts = line.split()
+                if len(parts) >= 4:
+                    leases.append({
+                        "expires": parts[0],
+                        "mac": parts[1],
+                        "ip": parts[2],
+                        "hostname": parts[3] if len(parts) > 3 else '*',
+                        "client_id": parts[4] if len(parts) > 4 else '',
+                    })
+
+        # Also get static leases from UCI
+        static_result = await self._uci_exec(
+            "uci show dhcp | grep '=host$'"
+        )
+        static_leases = []
+        if static_result['exit_code'] == 0 and static_result['stdout']:
+            for line in static_result['stdout'].splitlines():
+                section_key = line.split('=')[0].replace('dhcp.', '')
+                host_data = await self._uci_exec(f"uci show dhcp.{section_key}")
+                host = {}
+                for hl in host_data['stdout'].splitlines():
+                    if '=' not in hl:
+                        continue
+                    k, _, v = hl.partition('=')
+                    option = k.split('.')[-1]
+                    host[option] = v.strip("'\"")
+                static_leases.append(host)
+
+        return {
+            "host": self.firewall_host,
+            "active_leases": leases,
+            "active_count": len(leases),
+            "static_leases": static_leases,
+            "static_count": len(static_leases),
+        }
+
+    async def _fw_logs(self, params: dict) -> dict:
+        """Read system/firewall logs from the OpenWrt router.
+
+        Params:
+            lines:  Number of lines to return (default 50)
+            filter: Optional grep filter (e.g. 'DROP', 'REJECT', 'wan', 'firewall')
+        """
+        lines = int(params.get('lines', 50))
+        log_filter = params.get('filter', '')
+
+        cmd = "logread"
+        if log_filter:
+            cmd += f" | grep -i {shlex.quote(log_filter)}"
+        cmd += f" | tail -n {lines}"
+
+        result = await self._uci_exec(cmd)
+        log_text = result['stdout'] if result['exit_code'] == 0 else ''
+
+        # Also get dmesg for kernel-level firewall messages if filter is firewall-related
+        dmesg_text = ''
+        if not log_filter or any(kw in log_filter.lower() for kw in ('drop', 'reject', 'fw', 'firewall', 'iptables')):
+            dmesg_result = await self._uci_exec(
+                f"dmesg | grep -i 'DROP\\|REJECT\\|fw' | tail -n 20"
+            )
+            if dmesg_result['exit_code'] == 0:
+                dmesg_text = dmesg_result['stdout']
+
+        return {
+            "host": self.firewall_host,
+            "log_lines": lines,
+            "filter": log_filter or "(none)",
+            "logs": log_text,
+            "kernel_fw_logs": dmesg_text,
+        }
 
     # ==================== GENERIC LINUX NETWORK ====================
 

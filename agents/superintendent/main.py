@@ -368,16 +368,16 @@ class SuperintendentAgent(BaseAgent):
         except (ValueError, TypeError):
             pass
 
-        # Search by name
-        name = str(vmid_or_name)
+        # Search by name (case-insensitive)
+        name = str(vmid_or_name).lower()
         for n in self.proxmox.nodes.get():
             try:
                 for vm in self.proxmox.nodes(n['node']).qemu.get():
-                    if vm.get('name') == name:
+                    if vm.get('name', '').lower() == name:
                         return vm['vmid'], n['node']
             except Exception:
                 continue
-        raise ValueError(f"VM '{name}' not found on any node")
+        raise ValueError(f"VM '{vmid_or_name}' not found on any node")
 
     def create_app(self):
         app = super().create_app()

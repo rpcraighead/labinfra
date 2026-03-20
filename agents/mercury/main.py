@@ -290,17 +290,23 @@ class MercuryAgent(BaseAgent):
 
 # ==================== MAIN ====================
 
+    def create_app(self):
+        app = super().create_app()
+
+        @app.get("/containers")
+        async def containers_endpoint():
+            try:
+                return await asyncio.to_thread(self._list_containers, {})
+            except Exception as e:
+                return {"error": str(e), "containers": []}
+
+        return app
+
+
+# ==================== MAIN ====================
+
 agent = MercuryAgent()
 app = agent.create_app()
-
-
-@app.get("/containers")
-async def containers_endpoint():
-    try:
-        return await asyncio.to_thread(agent._list_containers, {})
-    except Exception as e:
-        return {"error": str(e), "containers": []}
-
 
 if __name__ == '__main__':
     agent.run()

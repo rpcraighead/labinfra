@@ -226,8 +226,9 @@ class BaseAgent:
 
         return app
 
-    def run(self):
+    def run(self, app=None):
         """Start the agent with uvicorn."""
         import uvicorn
-        app = self.create_app()
+        if app is None:
+            app = self.create_app()
         uvicorn.run(app, host="0.0.0.0", port=self.port)
