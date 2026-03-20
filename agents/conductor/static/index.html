@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conductor - CyberFlight Lab</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #0a0e17;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: #111827;
+    border-bottom: 1px solid #1e3a5f;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 {
+    font-size: 18px;
+    color: #60a5fa;
+    font-weight: 600;
+  }
+  header .status {
+    font-size: 12px;
+    color: #6b7280;
+    margin-left: auto;
+  }
+  header .status.connected { color: #34d399; }
+  #api-key-bar {
+    background: #111827;
+    border-bottom: 1px solid #1e3a5f;
+    padding: 8px 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #api-key-bar label { font-size: 12px; color: #9ca3af; }
+  #api-key-bar input {
+    flex: 1;
+    max-width: 300px;
+    background: #1f2937;
+    border: 1px solid #374151;
+    color: #e0e0e0;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: monospace;
+  }
+  #chat-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .msg {
+    max-width: 80%;
+    padding: 10px 14px;
+    border-radius: 8px;
+    line-height: 1.5;
+    font-size: 14px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: #1e3a5f;
+    color: #dbeafe;
+    border-bottom-right-radius: 2px;
+  }
+  .msg.assistant {
+    align-self: flex-start;
+    background: #1f2937;
+    color: #e5e7eb;
+    border-bottom-left-radius: 2px;
+  }
+  .msg.system {
+    align-self: center;
+    background: #064e3b;
+    color: #a7f3d0;
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+  .msg.error {
+    align-self: center;
+    background: #7f1d1d;
+    color: #fca5a5;
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+  .plan-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .plan-actions button {
+    padding: 6px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .btn-approve { background: #059669; color: white; }
+  .btn-approve:hover { background: #047857; }
+  .btn-reject { background: #dc2626; color: white; }
+  .btn-reject:hover { background: #b91c1c; }
+  pre {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 8px;
+    overflow-x: auto;
+    font-size: 12px;
+    margin-top: 6px;
+  }
+  code { font-family: 'Cascadia Code', 'Fira Code', monospace; }
+  #input-area {
+    background: #111827;
+    border-top: 1px solid #1e3a5f;
+    padding: 12px 20px;
+    display: flex;
+    gap: 8px;
+  }
+  #input-area textarea {
+    flex: 1;
+    background: #1f2937;
+    border: 1px solid #374151;
+    color: #e0e0e0;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    resize: none;
+    min-height: 44px;
+    max-height: 120px;
+  }
+  #input-area textarea:focus { outline: none; border-color: #60a5fa; }
+  #input-area button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  #input-area button:hover { background: #1d4ed8; }
+  #input-area button:disabled { background: #374151; cursor: not-allowed; }
+  .typing { color: #9ca3af; font-style: italic; font-size: 13px; padding: 4px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Conductor</h1>
+  <span style="font-size:12px; color:#6b7280;">CyberFlight Lab Orchestrator</span>
+  <span id="status" class="status">disconnected</span>
+</header>
+
+<div id="api-key-bar">
+  <label for="api-key">API Key:</label>
+  <input type="password" id="api-key" placeholder="Enter API key..." />
+</div>
+
+<div id="chat-area"></div>
+
+<div id="input-area">
+  <textarea id="message" placeholder="Tell Conductor what to do..." rows="1"></textarea>
+  <button id="send-btn" onclick="sendMessage()">Send</button>
+</div>
+
+<script>
+const chatArea = document.getElementById('chat-area');
+const messageInput = document.getElementById('message');
+const sendBtn = document.getElementById('send-btn');
+const statusEl = document.getElementById('status');
+const apiKeyInput = document.getElementById('api-key');
+
+let conversationId = null;
+let pendingPlan = false;
+
+// Auto-resize textarea
+messageInput.addEventListener('input', () => {
+  messageInput.style.height = 'auto';
+  messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
+});
+
+// Enter to send, Shift+Enter for newline
+messageInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// Load API key from localStorage
+apiKeyInput.value = localStorage.getItem('conductor_api_key') || '';
+apiKeyInput.addEventListener('change', () => {
+  localStorage.setItem('conductor_api_key', apiKeyInput.value);
+});
+
+// Check health on load
+checkHealth();
+
+function getHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKeyInput.value) {
+    headers['X-API-Key'] = apiKeyInput.value;
+  }
+  return headers;
+}
+
+async function checkHealth() {
+  try {
+    const resp = await fetch('/health');
+    if (resp.ok) {
+      statusEl.textContent = 'connected';
+      statusEl.className = 'status connected';
+    }
+  } catch {
+    statusEl.textContent = 'disconnected';
+    statusEl.className = 'status';
+  }
+}
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+
+  if (role === 'assistant') {
+    // Render JSON blocks as <pre>
+    const rendered = text.replace(/```json\s*([\s\S]*?)```/g, (_, code) => {
+      return `<pre><code>${escapeHtml(code.trim())}</code></pre>`;
+    }).replace(/```(\w*)\s*([\s\S]*?)```/g, (_, lang, code) => {
+      return `<pre><code>${escapeHtml(code.trim())}</code></pre>`;
+    });
+    div.innerHTML = rendered;
+  } else {
+    div.textContent = text;
+  }
+
+  chatArea.appendChild(div);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  return div;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function addPlanButtons(conversationId) {
+  const div = document.createElement('div');
+  div.className = 'plan-actions';
+  div.innerHTML = `
+    <button class="btn-approve" onclick="approvePlan('${conversationId}')">Approve</button>
+    <button class="btn-reject" onclick="rejectPlan('${conversationId}')">Reject</button>
+  `;
+  chatArea.appendChild(div);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  pendingPlan = true;
+}
+
+async function sendMessage() {
+  const text = messageInput.value.trim();
+  if (!text) return;
+
+  addMessage('user', text);
+  messageInput.value = '';
+  messageInput.style.height = 'auto';
+  sendBtn.disabled = true;
+
+  const typing = document.createElement('div');
+  typing.className = 'typing';
+  typing.textContent = 'Conductor is thinking...';
+  chatArea.appendChild(typing);
+  chatArea.scrollTop = chatArea.scrollHeight;
+
+  try {
+    const resp = await fetch('/chat', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({
+        message: text,
+        conversation_id: conversationId,
+      }),
+    });
+
+    typing.remove();
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      addMessage('error', `Error ${resp.status}: ${err.detail || JSON.stringify(err)}`);
+      return;
+    }
+
+    const data = await resp.json();
+    conversationId = data.conversation_id;
+    addMessage('assistant', data.reply);
+
+    if (data.status === 'awaiting_approval' && data.plan) {
+      addPlanButtons(data.conversation_id);
+    }
+  } catch (e) {
+    typing.remove();
+    addMessage('error', `Network error: ${e.message}`);
+  } finally {
+    sendBtn.disabled = false;
+    messageInput.focus();
+  }
+}
+
+async function approvePlan(convId) {
+  // Remove buttons
+  document.querySelectorAll('.plan-actions').forEach(el => el.remove());
+  pendingPlan = false;
+
+  addMessage('system', 'Plan approved. Dispatching...');
+
+  try {
+    const resp = await fetch(`/chat/${convId}/approve`, {
+      method: 'POST',
+      headers: getHeaders(),
+    });
+    const data = await resp.json();
+
+    if (resp.ok) {
+      const tasks = data.planned_tasks || [];
+      const summary = tasks.map(t =>
+        `  ${t.agent}.${t.operation} [${t.status || t.task_id}]`
+      ).join('\n');
+      addMessage('system', `Intent ${data.intent_id}\n${data.message}\n\nTasks:\n${summary}`);
+    } else {
+      addMessage('error', `Approval failed: ${data.detail || JSON.stringify(data)}`);
+    }
+  } catch (e) {
+    addMessage('error', `Network error: ${e.message}`);
+  }
+}
+
+async function rejectPlan(convId) {
+  document.querySelectorAll('.plan-actions').forEach(el => el.remove());
+  pendingPlan = false;
+
+  const reason = prompt('Reason for rejection (optional):') || '';
+
+  try {
+    const resp = await fetch(`/chat/${convId}/reject?reason=${encodeURIComponent(reason)}`, {
+      method: 'POST',
+      headers: getHeaders(),
+    });
+    const data = await resp.json();
+
+    if (data.reply) {
+      addMessage('assistant', data.reply);
+      if (data.status === 'awaiting_approval' && data.plan) {
+        addPlanButtons(data.conversation_id);
+      }
+    } else {
+      addMessage('system', 'Plan rejected.');
+    }
+  } catch (e) {
+    addMessage('error', `Network error: ${e.message}`);
+  }
+}
+
+// Periodic health check
+setInterval(checkHealth, 30000);
+</script>
+</body>
+</html>

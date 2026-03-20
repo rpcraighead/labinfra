@@ -16,6 +16,8 @@ import yaml
 import httpx
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security import APIKeyHeader
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import aio_pika
 import redis.asyncio as aioredis
@@ -269,8 +271,50 @@ class ConductorService:
             return [{"agent": agent, "task": intent.action, "depends_on": []}]
         return []
 
+    async def _dispatch_task(
+        self, agent: str, operation: str, intent: UserIntent,
+        intent_id: str, correlation_id: str,
+    ) -> dict:
+        """Dispatch a single task to an agent via RabbitMQ."""
+        task_id = str(uuid.uuid4())
+        task_body = {
+            "operation": operation,
+            "priority": "normal",
+            "target_agent": agent,
+            "parameters": intent.resource.model_dump(),
+            "gatekeeper_required": operation in self.gatekeeper_actions,
+            "timeout_seconds": intent.expected_duration_seconds,
+            "retry_policy": {"max_retries": 3, "backoff_seconds": 10},
+        }
+        task_msg = make_envelope(
+            message_type="TASK_ASSIGNMENT",
+            sender="conductor",
+            body=task_body,
+            correlation_id=correlation_id,
+            intent_id=intent_id,
+            recipient=agent,
+            task_id=task_id,
+        )
+        routing_key = f"{agent}.{operation}"
+        await publish(self.exchanges['agent.task'], routing_key, task_msg)
+
+        await self.redis.setex(
+            f"task:{task_id}", 3600,
+            json.dumps({
+                "status": "dispatched",
+                "agent": agent,
+                "operation": operation,
+                "intent_id": intent_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        )
+        TASKS_TOTAL.labels(agent=agent).inc()
+        ACTIVE_TASKS.labels(agent=agent).inc()
+        logger.info(f"Task {task_id} dispatched to {agent}: {operation}")
+        return {"task_id": task_id, "agent": agent, "operation": operation}
+
     async def submit_intent(self, intent: UserIntent, user_id: str) -> IntentResponse:
-        """Accept a user intent, broadcast it, and dispatch tasks."""
+        """Accept a user intent, broadcast it, and dispatch tasks with dependency ordering."""
         intent_id = str(uuid.uuid4())
         correlation_id = str(uuid.uuid4())
 
@@ -294,58 +338,50 @@ class ConductorService:
         INTENTS_TOTAL.inc()
         logger.info(f"Intent {intent_id} broadcast: {intent.action}")
 
-        # Plan and dispatch tasks
+        # Plan tasks
         planned = self.plan_tasks(intent)
         dispatched = []
 
+        # Build a lookup: "agent.task" -> task_id for dependency resolution
+        # Separate tasks into ready (no deps) and pending (has deps)
         for step in planned:
-            task_id = str(uuid.uuid4())
-            agent = step['agent']
-            operation = step['task']
+            step_key = f"{step['agent']}.{step['task']}"
+            deps = step.get('depends_on', [])
 
-            task_body = {
-                "operation": operation,
-                "priority": "normal",
-                "target_agent": agent,
-                "parameters": intent.resource.model_dump(),
-                "gatekeeper_required": operation in self.gatekeeper_actions,
-                "timeout_seconds": intent.expected_duration_seconds,
-                "retry_policy": {"max_retries": 3, "backoff_seconds": 10},
-            }
-
-            task_msg = make_envelope(
-                message_type="TASK_ASSIGNMENT",
-                sender="conductor",
-                body=task_body,
-                correlation_id=correlation_id,
-                intent_id=intent_id,
-                recipient=agent,
-                task_id=task_id,
-            )
-
-            routing_key = f"{agent}.{operation}"
-            await publish(self.exchanges['agent.task'], routing_key, task_msg)
-
-            # Track task state
-            await self.redis.setex(
-                f"task:{task_id}", 3600,
-                json.dumps({
-                    "status": "dispatched",
-                    "agent": agent,
-                    "operation": operation,
-                    "intent_id": intent_id,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+            if not deps:
+                # No dependencies — dispatch immediately
+                info = await self._dispatch_task(
+                    step['agent'], step['task'], intent, intent_id, correlation_id,
+                )
+                dispatched.append(info)
+            else:
+                # Has dependencies — store as pending, dispatch when deps complete
+                task_id = str(uuid.uuid4())
+                await self.redis.setex(
+                    f"task:{task_id}", 3600,
+                    json.dumps({
+                        "status": "pending",
+                        "agent": step['agent'],
+                        "operation": step['task'],
+                        "intent_id": intent_id,
+                        "correlation_id": correlation_id,
+                        "depends_on": deps,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                )
+                # Index pending task by intent for lookup during event handling
+                await self.redis.sadd(f"pending_tasks:{intent_id}", task_id)
+                dispatched.append({
+                    "task_id": task_id,
+                    "agent": step['agent'],
+                    "operation": step['task'],
+                    "status": "pending",
+                    "depends_on": deps,
                 })
-            )
-
-            TASKS_TOTAL.labels(agent=agent).inc()
-            ACTIVE_TASKS.labels(agent=agent).inc()
-            dispatched.append({
-                "task_id": task_id,
-                "agent": agent,
-                "operation": operation,
-            })
-            logger.info(f"Task {task_id} dispatched to {agent}: {operation}")
+                logger.info(
+                    f"Task {task_id} pending for {step['agent']}: {step['task']} "
+                    f"(waiting on {deps})"
+                )
 
         # Log to audit exchange
         audit_msg = make_envelope(
@@ -354,23 +390,26 @@ class ConductorService:
             body={
                 "intent": intent.model_dump(),
                 "user_id": user_id,
-                "tasks_dispatched": len(dispatched),
+                "tasks_dispatched": sum(1 for d in dispatched if d.get('status') != 'pending'),
+                "tasks_pending": sum(1 for d in dispatched if d.get('status') == 'pending'),
             },
             correlation_id=correlation_id,
             intent_id=intent_id,
         )
         await publish(self.exchanges['agent.audit'], 'audit.intent', audit_msg)
 
+        pending_count = sum(1 for d in dispatched if d.get('status') == 'pending')
+        immediate = len(dispatched) - pending_count
         return IntentResponse(
             status="accepted",
             intent_id=intent_id,
             action=intent.action,
             planned_tasks=dispatched,
-            message=f"Intent broadcast, {len(dispatched)} task(s) dispatched",
+            message=f"Intent broadcast, {immediate} task(s) dispatched, {pending_count} pending on dependencies",
         )
 
     async def handle_event(self, event: dict):
-        """Handle events from subagents."""
+        """Handle events from subagents, including dependency-aware dispatch."""
         msg_type = event.get('message_type')
         task_id = event.get('task_id')
         sender = event.get('sender')
@@ -379,12 +418,16 @@ class ConductorService:
             ACTIVE_TASKS.labels(agent=sender).dec()
             await self._update_task(task_id, 'completed')
             logger.info(f"Task {task_id} completed by {sender}")
+            # Check if any pending tasks are now unblocked
+            await self._check_pending_deps(task_id)
 
         elif msg_type == 'TASK_FAILED':
             ACTIVE_TASKS.labels(agent=sender).dec()
             error = event.get('body', {}).get('error', 'unknown')
             await self._update_task(task_id, 'failed', error=str(error))
             logger.warning(f"Task {task_id} failed ({sender}): {error}")
+            # Cascade failure to dependent tasks
+            await self._cascade_failure(task_id)
 
         elif msg_type == 'TASK_STARTED':
             await self._update_task(task_id, 'running')
@@ -404,6 +447,99 @@ class ConductorService:
                     recipient="judge",
                 )
             )
+
+    async def _check_pending_deps(self, completed_task_id: str):
+        """When a task completes, check if any pending tasks in the same intent are now ready."""
+        raw = await self.redis.get(f"task:{completed_task_id}")
+        if not raw:
+            return
+        completed_task = json.loads(raw)
+        intent_id = completed_task.get('intent_id')
+        if not intent_id:
+            return
+
+        # Build set of completed "agent.operation" keys for this intent
+        completed_keys = await self._get_completed_keys(intent_id)
+
+        # Check each pending task for this intent
+        pending_ids = await self.redis.smembers(f"pending_tasks:{intent_id}")
+        for pending_id in pending_ids:
+            pending_raw = await self.redis.get(f"task:{pending_id}")
+            if not pending_raw:
+                await self.redis.srem(f"pending_tasks:{intent_id}", pending_id)
+                continue
+
+            pending_task = json.loads(pending_raw)
+            if pending_task.get('status') != 'pending':
+                continue
+
+            deps = pending_task.get('depends_on', [])
+            if all(dep in completed_keys for dep in deps):
+                # All dependencies satisfied — dispatch this task
+                logger.info(f"Dependencies met for task {pending_id}, dispatching")
+
+                # Recover the original intent for parameters
+                intent_raw = await self.redis.get(f"intent:{intent_id}")
+                intent = UserIntent(**json.loads(intent_raw)) if intent_raw else None
+
+                if intent:
+                    info = await self._dispatch_task(
+                        pending_task['agent'],
+                        pending_task['operation'],
+                        intent,
+                        intent_id,
+                        pending_task.get('correlation_id', str(uuid.uuid4())),
+                    )
+                    # Remove from pending set
+                    await self.redis.srem(f"pending_tasks:{intent_id}", pending_id)
+                    # Delete the old pending record (dispatch_task creates a new one)
+                    await self.redis.delete(f"task:{pending_id}")
+                    logger.info(
+                        f"Pending task {pending_id} dispatched as {info['task_id']} "
+                        f"to {info['agent']}: {info['operation']}"
+                    )
+                else:
+                    logger.error(f"Cannot dispatch pending task {pending_id}: intent {intent_id} not found")
+
+    async def _cascade_failure(self, failed_task_id: str):
+        """When a task fails, mark all tasks that depend on it as blocked."""
+        raw = await self.redis.get(f"task:{failed_task_id}")
+        if not raw:
+            return
+        failed_task = json.loads(raw)
+        intent_id = failed_task.get('intent_id')
+        if not intent_id:
+            return
+
+        failed_key = f"{failed_task.get('agent')}.{failed_task.get('operation')}"
+
+        pending_ids = await self.redis.smembers(f"pending_tasks:{intent_id}")
+        for pending_id in pending_ids:
+            pending_raw = await self.redis.get(f"task:{pending_id}")
+            if not pending_raw:
+                continue
+            pending_task = json.loads(pending_raw)
+            deps = pending_task.get('depends_on', [])
+            if failed_key in deps:
+                await self._update_task(pending_id, 'blocked',
+                                        error=f"Dependency {failed_key} failed")
+                await self.redis.srem(f"pending_tasks:{intent_id}", pending_id)
+                logger.warning(
+                    f"Task {pending_id} ({pending_task['agent']}.{pending_task['operation']}) "
+                    f"blocked: dependency {failed_key} failed"
+                )
+
+    async def _get_completed_keys(self, intent_id: str) -> set:
+        """Get all completed 'agent.operation' keys for an intent."""
+        completed = set()
+        async for key in self.redis.scan_iter(match="task:*"):
+            task_raw = await self.redis.get(key)
+            if not task_raw:
+                continue
+            task = json.loads(task_raw)
+            if task.get('intent_id') == intent_id and task.get('status') == 'completed':
+                completed.add(f"{task.get('agent')}.{task.get('operation')}")
+        return completed
 
     async def _update_task(self, task_id: str, status: str, error: str = None):
         """Update task state in Redis."""
@@ -591,13 +727,21 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Conductor - Agent Swarm Orchestrator",
     description="Receives user intent, broadcasts to agents, dispatches tasks",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
 # Mount Prometheus metrics at /metrics
 metrics_app = make_asgi_app(registry=METRICS_REGISTRY)
 app.mount("/metrics", metrics_app)
+
+# Serve web UI
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/ui")
+async def ui_index():
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 # ==================== ENDPOINTS ====================
@@ -607,7 +751,7 @@ async def health():
     return {
         "status": "healthy",
         "service": "conductor",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

@@ -1,0 +1,267 @@
+# Conductor Configuration
+# Agent routing and execution policies
+
+agents:
+  subagents:
+    - name: superintendent
+      port: 8001
+      capabilities:
+        - create_vm
+        - delete_vm
+        - modify_vm
+        - provision_node
+        - system_update
+      maxConcurrentTasks: 3
+      timeoutSeconds: 300
+      retryPolicy:
+        maxRetries: 3
+        backoffSeconds: 10
+
+    - name: mercury
+      port: 8002
+      capabilities:
+        - deploy_container
+        - docker_build
+        - docker_push
+        - scale_service
+      maxConcurrentTasks: 5
+      timeoutSeconds: 180
+      retryPolicy:
+        maxRetries: 2
+        backoffSeconds: 5
+
+    - name: davinci
+      port: 8003
+      capabilities:
+        - generate_code
+        - apply_config
+        - git_commit
+        - create_iac
+      maxConcurrentTasks: 2
+      timeoutSeconds: 600
+      retryPolicy:
+        maxRetries: 1
+        backoffSeconds: 30
+
+    - name: sapper
+      port: 8004
+      capabilities:
+        - configure_network
+        - update_firewall
+        - modify_routes
+        - apply_policy
+      maxConcurrentTasks: 2
+      timeoutSeconds: 120
+      retryPolicy:
+        maxRetries: 3
+        backoffSeconds: 10
+
+observers:
+  - name: monitor
+    port: 8005
+    role: independent_observer
+    subscriptions:
+      - task.started
+      - task.progress
+      - task.completed
+      - task.failed
+
+  - name: scribe
+    port: 8006
+    role: documentation
+    subscriptions:
+      - task.completed
+      - task.failed
+
+  - name: judge
+    port: 8007
+    role: arbitration
+    subscriptions:
+      - anomaly.detected
+      - constraint.violated
+
+# Task routing matrix: intent_action -> agent_task_list
+taskRouting:
+  list_vms:
+    - agent: superintendent
+      task: list_vms
+      requiredConstraints: []
+
+  list_nodes:
+    - agent: superintendent
+      task: list_nodes
+      requiredConstraints: []
+
+  vm_status:
+    - agent: superintendent
+      task: vm_status
+      requiredConstraints: []
+
+  node_status:
+    - agent: superintendent
+      task: node_status
+      requiredConstraints: []
+
+  system_status:
+    - agent: superintendent
+      task: system_status
+      requiredConstraints: []
+
+  start_vm:
+    - agent: superintendent
+      task: start_vm
+      requiredConstraints: []
+
+  stop_vm:
+    - agent: superintendent
+      task: stop_vm
+      requiredConstraints: []
+
+  provision_vm:
+    - agent: superintendent
+      task: create_vm
+      requiredConstraints: []
+    - agent: sapper
+      task: configure_network
+      dependsOn: [superintendent.create_vm]
+
+  provision_container:
+    - agent: mercury
+      task: deploy_container
+      requiredConstraints: []
+
+  deploy_container:
+    - agent: mercury
+      task: deploy_container
+      requiredConstraints: []
+
+  list_containers:
+    - agent: mercury
+      task: list_containers
+      requiredConstraints: []
+
+  stop_container:
+    - agent: mercury
+      task: stop_container
+      requiredConstraints: []
+
+  remove_container:
+    - agent: mercury
+      task: remove_container
+      requiredConstraints: []
+
+  pull_image:
+    - agent: mercury
+      task: pull_image
+      requiredConstraints: []
+
+  docker_build:
+    - agent: mercury
+      task: docker_build
+      requiredConstraints: []
+
+  scale_service:
+    - agent: mercury
+      task: scale_service
+      requiredConstraints: []
+
+  update_infrastructure:
+    - agent: davinci
+      task: apply_config
+      requiredConstraints: []
+    - agent: superintendent
+      task: apply_configuration
+      dependsOn: [davinci.apply_config]
+
+  patch_system:
+    - agent: superintendent
+      task: apply_patch
+      requiredConstraints: []
+
+  configure_network:
+    - agent: sapper
+      task: configure_network
+      requiredConstraints: []
+
+# Constraints and enforcement
+constraints:
+  builtIn:
+    no_production_impact:
+      description: "Do not impact production systems"
+      enforcement: "Monitor must verify before proceeding"
+      escalationRequired: true
+
+    within_budget:
+      description: "Stay within resource budget"
+      enforcement: "Check resource allocation"
+      escalationRequired: false
+
+    compliance_approved:
+      description: "Must have compliance approval"
+      enforcement: "Check approval status before execution"
+      escalationRequired: true
+
+    maintenance_window:
+      description: "Only execute during maintenance window"
+      enforcement: "Verify maintenance window active"
+      escalationRequired: true
+
+# Gatekeeper integration
+gatekeeper:
+  url: http://gatekeeper:5678
+  requiredFor:
+    - create_vm
+    - delete_vm
+    - execute_command
+    - modify_network
+    - configure_firewall
+  timeout_seconds: 60
+  reverifyInterval: 300
+
+# Escalation policies
+escalation:
+  constraints_violated:
+    action: halt_and_notify
+    notifyJudge: true
+    notifyUser: true
+    timeout_seconds: 60
+    rollbackOnTimeout: true
+
+  gatekeeper_rejected:
+    action: halt
+    notifyUser: true
+    allowManualOverride: false
+
+  timeout:
+    action: retry_or_halt
+    maxRetries: 3
+    escalateAfterRetries: true
+
+# Audit and logging
+audit:
+  logAllMessages: true
+  logToDatabase: true
+  databaseUrl: postgresql://auditlog@postgres:5432/swarm_audit
+  logRetentionDays: 90
+  offSiteBackup: true
+  offSiteInterval: 86400  # Daily
+
+# Monitoring and observability
+monitoring:
+  prometheusPort: 9090
+  metricsInterval: 30
+  healthCheckInterval: 10
+  alertOnTaskFailure: true
+  alertOnConstraintViolation: true
+  alertWebhook: ${ALERT_WEBHOOK_URL}
+
+# Logging
+logging:
+  level: INFO
+  format: json
+  output: stdout
+  file:
+    enabled: true
+    path: /var/log/conductor/conductor.log
+    maxSize: 100
+    retention: 30

@@ -1,0 +1,71 @@
+# Agent Swarm - Phase 3: Subagents (Superintendent, Mercury)
+# Extends infra + conductor with real infrastructure-connected agents.
+#
+# Usage:
+#   docker compose -f docker-compose.infra.yml -f docker-compose.conductor.yml -f docker-compose.agents.yml up -d
+
+services:
+  superintendent:
+    build:
+      context: ./agents
+      dockerfile: superintendent/Dockerfile
+    container_name: superintendent-infra
+    environment:
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      PROXMOX_ENDPOINT: ${PROXMOX_ENDPOINT:-<BIGHOST_IP>}
+      PROXMOX_USERNAME: ${PROXMOX_USERNAME:-root@pam}
+      PROXMOX_TOKEN_NAME: ${PROXMOX_TOKEN_NAME:-}
+      PROXMOX_TOKEN_VALUE: ${PROXMOX_TOKEN_VALUE:-}
+      PROXMOX_PASSWORD: ${PROXMOX_PASSWORD:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - swarm-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      conductor:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  mercury:
+    build:
+      context: ./agents
+      dockerfile: mercury/Dockerfile
+    container_name: mercury-containers
+    environment:
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      DOCKER_HOST: ${MERCURY_DOCKER_HOST:-unix:///var/run/docker.sock}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${MERCURY_SMTP_USER:-mercury@mail.rpc-cyberflight.com}
+      SMTP_PASSWORD: ${MERCURY_SMTP_PASSWORD:-}
+      AGENT_EMAIL: mercury@mail.rpc-cyberflight.com
+      NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - swarm-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      conductor:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  swarm-net:
+    external: true
+    name: agent-swarm_swarm-net
