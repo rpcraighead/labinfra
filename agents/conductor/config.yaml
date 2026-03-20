@@ -58,6 +58,9 @@ agents:
         - fw_add_redirect
         - fw_delete_redirect
         - fw_add_forwarding
+        - fw_list_forwarding
+        - network_status
+        - ping_test
       maxConcurrentTasks: 2
       timeoutSeconds: 120
       retryPolicy:
@@ -235,6 +238,21 @@ taskRouting:
   fw_add_forwarding:
     - agent: sapper
       task: fw_add_forwarding
+      requiredConstraints: []
+
+  fw_list_forwarding:
+    - agent: sapper
+      task: fw_list_forwarding
+      requiredConstraints: []
+
+  network_status:
+    - agent: sapper
+      task: network_status
+      requiredConstraints: []
+
+  ping_test:
+    - agent: sapper
+      task: ping_test
       requiredConstraints: []
 
 # Constraints and enforcement

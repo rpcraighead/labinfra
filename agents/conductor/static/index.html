@@ -339,6 +339,8 @@ async function approvePlan(convId) {
         `  ${t.agent}.${t.operation} [${t.status || t.task_id}]`
       ).join('\n');
       addMessage('system', `Intent ${data.intent_id}\n${data.message}\n\nTasks:\n${summary}`);
+      // Start polling for results
+      pollForResults(convId);
     } else {
       addMessage('error', `Approval failed: ${data.detail || JSON.stringify(data)}`);
     }
@@ -371,6 +373,58 @@ async function rejectPlan(convId) {
   } catch (e) {
     addMessage('error', `Network error: ${e.message}`);
   }
+}
+
+async function pollForResults(convId) {
+  const typing = document.createElement('div');
+  typing.className = 'typing';
+  typing.textContent = 'Waiting for agent results...';
+  chatArea.appendChild(typing);
+  chatArea.scrollTop = chatArea.scrollHeight;
+
+  let attempts = 0;
+  const maxAttempts = 30; // 30 * 2s = 60s max
+
+  const poll = setInterval(async () => {
+    attempts++;
+    try {
+      const resp = await fetch(`/chat/${convId}/results`, { headers: getHeaders() });
+      if (!resp.ok) { clearInterval(poll); typing.remove(); return; }
+      const data = await resp.json();
+
+      typing.textContent = `Waiting for agent results... (${data.tasks_done}/${data.tasks_total})`;
+
+      if (data.status === 'complete' || attempts >= maxAttempts) {
+        clearInterval(poll);
+        typing.remove();
+
+        if (data.results.length === 0 && attempts >= maxAttempts) {
+          addMessage('system', 'Timed out waiting for results.');
+          return;
+        }
+
+        for (const r of data.results) {
+          if (r.status === 'failed') {
+            const errMsg = typeof r.error === 'object' ? JSON.stringify(r.error) : (r.error || 'unknown');
+            addMessage('error', `${r.agent}.${r.operation} FAILED: ${errMsg}`);
+          } else {
+            const result = r.result;
+            let text = `${r.agent}.${r.operation} completed`;
+            if (result && typeof result === 'object') {
+              text += ':\n```json\n' + JSON.stringify(result, null, 2) + '\n```';
+            } else if (result) {
+              text += ': ' + String(result);
+            }
+            addMessage('assistant', text);
+          }
+        }
+      }
+    } catch (e) {
+      clearInterval(poll);
+      typing.remove();
+      addMessage('error', `Polling error: ${e.message}`);
+    }
+  }, 2000);
 }
 
 // Periodic health check

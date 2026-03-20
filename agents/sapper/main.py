@@ -607,9 +607,9 @@ class SapperAgent(BaseAgent):
     async def _ping_test(self, params: dict) -> dict:
         """Connectivity test from a source host to a target."""
         host = params.get('host') or params.get('source') or self.firewall_host
-        target = params.get('target')
+        target = params.get('target') or params.get('name')
         count = params.get('count', 3)
-        if not target:
+        if not target or target in ('', 'all', 'unknown'):
             raise ValueError("target is required")
 
         result = await self._ssh_exec(host, f"ping -c {int(count)} -W 3 {target}")

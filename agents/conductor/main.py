@@ -251,24 +251,36 @@ class ConductorService:
                 }
                 for step in route
             ]
-        # Fallback: simple mapping
-        action_to_agent = {
-            'provision_vm': 'superintendent',
-            'list_vms': 'superintendent',
-            'list_nodes': 'superintendent',
-            'vm_status': 'superintendent',
-            'node_status': 'superintendent',
-            'system_status': 'superintendent',
+        # Fallback: prefix-based routing for actions not in config
+        action = intent.action
+        prefix_to_agent = {
+            'fw_': 'sapper',
+            'network_': 'sapper',
+            'ping_': 'sapper',
+            'list_vm': 'superintendent',
+            'list_node': 'superintendent',
+            'vm_': 'superintendent',
+            'node_': 'superintendent',
+            'system_': 'superintendent',
             'start_vm': 'superintendent',
             'stop_vm': 'superintendent',
             'create_vm': 'superintendent',
-            'deploy_container': 'mercury',
+            'deploy_': 'mercury',
+            'docker_': 'mercury',
+            'list_container': 'mercury',
+            'stop_container': 'mercury',
+            'remove_container': 'mercury',
+            'pull_image': 'mercury',
+            'scale_': 'mercury',
+            'container_': 'mercury',
+            'generate_': 'davinci',
             'apply_config': 'davinci',
-            'configure_network': 'sapper',
+            'create_iac': 'davinci',
+            'git_': 'davinci',
         }
-        agent = action_to_agent.get(intent.action)
-        if agent:
-            return [{"agent": agent, "task": intent.action, "depends_on": []}]
+        for prefix, agent in prefix_to_agent.items():
+            if action.startswith(prefix) or action == prefix:
+                return [{"agent": agent, "task": action, "depends_on": []}]
         return []
 
     async def _dispatch_task(
@@ -281,7 +293,10 @@ class ConductorService:
             "operation": operation,
             "priority": "normal",
             "target_agent": agent,
-            "parameters": intent.resource.model_dump(),
+            "parameters": {
+                **intent.resource.model_dump(),
+                **{c.name: c.value for c in intent.constraints if c.value is not None},
+            },
             "gatekeeper_required": operation in self.gatekeeper_actions,
             "timeout_seconds": intent.expected_duration_seconds,
             "retry_policy": {"max_retries": 3, "backoff_seconds": 10},
@@ -413,19 +428,23 @@ class ConductorService:
         msg_type = event.get('message_type')
         task_id = event.get('task_id')
         sender = event.get('sender')
+        body = event.get('body', {})
 
         if msg_type == 'TASK_COMPLETED':
             ACTIVE_TASKS.labels(agent=sender).dec()
-            await self._update_task(task_id, 'completed')
+            await self._update_task(task_id, 'completed', result=body.get('result'))
             logger.info(f"Task {task_id} completed by {sender}")
+            # Store result for chat polling
+            await self._store_task_result(task_id, sender, body)
             # Check if any pending tasks are now unblocked
             await self._check_pending_deps(task_id)
 
         elif msg_type == 'TASK_FAILED':
             ACTIVE_TASKS.labels(agent=sender).dec()
-            error = event.get('body', {}).get('error', 'unknown')
+            error = body.get('error', 'unknown')
             await self._update_task(task_id, 'failed', error=str(error))
             logger.warning(f"Task {task_id} failed ({sender}): {error}")
+            await self._store_task_result(task_id, sender, body, failed=True)
             # Cascade failure to dependent tasks
             await self._cascade_failure(task_id)
 
@@ -541,7 +560,7 @@ class ConductorService:
                 completed.add(f"{task.get('agent')}.{task.get('operation')}")
         return completed
 
-    async def _update_task(self, task_id: str, status: str, error: str = None):
+    async def _update_task(self, task_id: str, status: str, error: str = None, result: Any = None):
         """Update task state in Redis."""
         if not task_id:
             return
@@ -551,19 +570,110 @@ class ConductorService:
             data['status'] = status
             if error:
                 data['error'] = error
+            if result is not None:
+                data['result'] = result
             data['updated_at'] = datetime.now(timezone.utc).isoformat()
             await self.redis.setex(f"task:{task_id}", 3600, json.dumps(data))
 
+    async def _store_task_result(self, task_id: str, agent: str, body: dict, failed: bool = False):
+        """Store task result keyed by intent_id for chat result polling."""
+        raw = await self.redis.get(f"task:{task_id}")
+        if not raw:
+            return
+        task = json.loads(raw)
+        intent_id = task.get('intent_id')
+        if not intent_id:
+            return
+
+        entry = {
+            "task_id": task_id,
+            "agent": agent,
+            "operation": task.get('operation', ''),
+            "status": "failed" if failed else "completed",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if failed:
+            entry["error"] = body.get('error', 'unknown')
+        else:
+            entry["result"] = body.get('result', {})
+
+        # Append to a list of results for this intent
+        await self.redis.rpush(f"intent_results:{intent_id}", json.dumps(entry))
+        await self.redis.expire(f"intent_results:{intent_id}", 3600)
+
     # ==================== LLM CHAT ====================
 
-    def _build_system_prompt(self) -> str:
-        """Build a system prompt describing available agents and actions."""
+    async def _get_live_inventory(self) -> str:
+        """Query agents for live infrastructure inventory."""
+        inventory_parts = []
+        agents_urls = {
+            'superintendent': os.getenv('SUPERINTENDENT_URL', 'http://superintendent:8001'),
+            'mercury': os.getenv('MERCURY_URL', 'http://mercury:8002'),
+        }
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            # Get VMs from Superintendent
+            try:
+                resp = await client.get(f"{agents_urls['superintendent']}/vms")
+                if resp.status_code == 200:
+                    vms = resp.json().get('vms', [])
+                    if vms:
+                        lines = ["LIVE VM INVENTORY (from Proxmox):"]
+                        lines.append("| VMID | Name | Node | Status | CPUs | RAM (GB) |")
+                        lines.append("|------|------|------|--------|------|----------|")
+                        for vm in vms:
+                            lines.append(
+                                f"| {vm['vmid']} | {vm['name']} | {vm['node']} "
+                                f"| {vm['status']} | {vm['cpus']} | {vm['mem_max_gb']} |"
+                            )
+                        inventory_parts.append('\n'.join(lines))
+            except Exception as e:
+                logger.debug(f"Failed to get VM inventory: {e}")
+
+            # Get containers from Mercury
+            try:
+                resp = await client.get(f"{agents_urls['mercury']}/containers")
+                if resp.status_code == 200:
+                    containers = resp.json().get('containers', [])
+                    if containers:
+                        lines = ["LIVE CONTAINER INVENTORY (from Docker on cainfra02):"]
+                        for c in containers[:20]:  # Limit to 20
+                            lines.append(f"- {c.get('name', 'unknown')}: {c.get('status', '?')}")
+                        inventory_parts.append('\n'.join(lines))
+            except Exception as e:
+                logger.debug(f"Failed to get container inventory: {e}")
+
+        return '\n\n'.join(inventory_parts) if inventory_parts else ''
+
+    def _load_project_context(self) -> str:
+        """Load static project context from mounted file."""
+        context_path = Path('/etc/conductor/context.md')
+        if context_path.exists():
+            text = context_path.read_text()
+            # Truncate if too long (keep under 4K tokens approx)
+            if len(text) > 8000:
+                text = text[:8000] + '\n... (truncated)'
+            return text
+        return ''
+
+    async def _build_system_prompt(self) -> str:
+        """Build a system prompt with agents, actions, live inventory, and project context."""
         agents_desc = []
         for sa in self.config.get('agents', {}).get('subagents', []):
             caps = ', '.join(sa.get('capabilities', []))
             agents_desc.append(f"- {sa['name']}: {caps}")
 
         routes = list(self.task_routing.keys())
+
+        # Gather dynamic context
+        live_inventory = await self._get_live_inventory()
+        project_context = self._load_project_context()
+
+        context_block = ''
+        if project_context:
+            context_block += f"\nPROJECT CONTEXT (CyberFlight Lab):\n{project_context}\n"
+        if live_inventory:
+            context_block += f"\n{live_inventory}\n"
 
         return f"""You are the Conductor, an AI orchestrator for the CyberFlight Lab infrastructure.
 Your job is to translate natural language requests into structured intent JSON.
@@ -573,7 +683,7 @@ AVAILABLE AGENTS:
 
 KNOWN ACTIONS (taskRouting):
 {', '.join(routes)}
-
+{context_block}
 INTENT JSON FORMAT:
 {{
   "action": "<action_name>",
@@ -585,18 +695,71 @@ INTENT JSON FORMAT:
 }}
 
 RULES:
-1. If the user's request maps to a known action, use it. Otherwise, pick the closest match or suggest a new action name.
-2. Always include "approver": "ron" unless the user specifies otherwise.
-3. If the request is ambiguous, ask a clarifying question instead of guessing. Prefix your reply with "CLARIFY:" when asking.
-4. If you can form an intent, respond with ONLY the JSON block wrapped in ```json``` fences. Add a one-line summary BEFORE the JSON.
-5. For multi-step workflows, use the most appropriate single top-level action. The Conductor will decompose it via taskRouting.
-6. Keep responses concise — you are an infrastructure operator, not a chatbot."""
+1. ALWAYS use exact names from the inventory above (e.g., "BethClaw" not "bethclaw", VMID 101 not "vm101").
+2. If the user's request maps to a known action, use it. Otherwise, pick the closest match.
+3. Always include "approver": "ron" unless the user specifies otherwise.
+4. If the request is ambiguous, ask a clarifying question instead of guessing. Prefix your reply with "CLARIFY:" when asking.
+5. If you can form an intent, respond with ONLY the JSON block wrapped in ```json``` fences. Add a one-line summary BEFORE the JSON.
+6. For multi-step workflows, use the most appropriate single top-level action. The Conductor will decompose it via taskRouting.
+7. Keep responses concise — you are an infrastructure operator, not a chatbot.
+8. The "name" field in resource should be the VM name, container name, or target as the user refers to it."""
 
-    async def chat(self, conversation_id: str, user_message: str) -> dict:
-        """Process a chat message through Ollama and return a response with optional plan."""
+    async def _call_llm(self, messages: list) -> str:
+        """Call the configured LLM provider (Ollama or OpenAI-compatible)."""
+        provider = os.getenv('LLM_PROVIDER', 'ollama').lower()
+
+        if provider == 'openai':
+            return await self._call_openai(messages)
+        else:
+            return await self._call_ollama(messages)
+
+    async def _call_ollama(self, messages: list) -> str:
+        """Call Ollama chat API."""
         ollama_url = os.getenv('OLLAMA_URL', 'http://localhost:11434')
         ollama_model = os.getenv('OLLAMA_MODEL', 'qwen3:8b-nothink')
 
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(f'{ollama_url}/api/chat', json={
+                'model': ollama_model,
+                'messages': messages,
+                'stream': False,
+            })
+            if resp.status_code != 200:
+                raise HTTPException(status_code=502, detail=f"Ollama returned {resp.status_code}")
+            return resp.json().get('message', {}).get('content', '')
+
+    async def _call_openai(self, messages: list) -> str:
+        """Call OpenAI-compatible API (Kimi, GPT, DeepSeek, etc.)."""
+        base_url = os.getenv('OPENAI_BASE_URL', 'https://api.moonshot.cn/v1')
+        api_key = os.getenv('OPENAI_API_KEY', '')
+        model = os.getenv('OPENAI_MODEL', 'moonshot-v1-8k')
+
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+        }
+        payload = {
+            'model': model,
+            'messages': messages,
+            'temperature': 0.3,
+        }
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f'{base_url}/chat/completions',
+                headers=headers,
+                json=payload,
+            )
+            if resp.status_code != 200:
+                detail = resp.text[:200]
+                raise HTTPException(status_code=502, detail=f"OpenAI API returned {resp.status_code}: {detail}")
+            choices = resp.json().get('choices', [])
+            if not choices:
+                raise HTTPException(status_code=502, detail="OpenAI API returned no choices")
+            return choices[0].get('message', {}).get('content', '')
+
+    async def chat(self, conversation_id: str, user_message: str) -> dict:
+        """Process a chat message through the configured LLM and return a response with optional plan."""
         # Load or create conversation history
         history_key = f"chat:{conversation_id}"
         raw_history = await self.redis.get(history_key)
@@ -605,22 +768,15 @@ RULES:
         # Append user message
         history.append({"role": "user", "content": user_message})
 
-        # Build messages for Ollama
-        messages = [{"role": "system", "content": self._build_system_prompt()}] + history
+        # Build messages with dynamic context
+        system_prompt = await self._build_system_prompt()
+        messages = [{"role": "system", "content": system_prompt}] + history
 
-        # Call Ollama chat API
+        # Call configured LLM
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(f'{ollama_url}/api/chat', json={
-                    'model': ollama_model,
-                    'messages': messages,
-                    'stream': False,
-                })
-                if resp.status_code != 200:
-                    raise HTTPException(status_code=502, detail=f"Ollama returned {resp.status_code}")
-                llm_reply = resp.json().get('message', {}).get('content', '')
+            llm_reply = await self._call_llm(messages)
         except httpx.ConnectError:
-            raise HTTPException(status_code=503, detail="Cannot reach Ollama LLM service")
+            raise HTTPException(status_code=503, detail="Cannot reach LLM service")
 
         # Strip think tags from qwen3
         llm_reply = re.sub(r'<think>.*?</think>', '', llm_reply, flags=re.DOTALL).strip()
@@ -681,7 +837,13 @@ RULES:
         await self.redis.setex(history_key, 3600, json.dumps(history))
 
         # Execute via the normal intent pipeline
-        return await self.submit_intent(intent, user_id)
+        response = await self.submit_intent(intent, user_id)
+
+        # Link conversation to intent for result polling
+        await self.redis.setex(
+            f"chat_intent:{conversation_id}", 3600, response.intent_id
+        )
+        return response
 
     async def disconnect(self):
         if self.amqp_connection:
@@ -737,6 +899,12 @@ app.mount("/metrics", metrics_app)
 
 # Serve web UI
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/")
+async def root_redirect():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/ui")
 
 
 @app.get("/ui")
@@ -847,6 +1015,37 @@ async def reject_chat_plan(conversation_id: str, reason: str = ""):
         result = await conductor.chat(conversation_id, f"I rejected that plan. {reason}")
         return ChatResponse(**result)
     return {"status": "rejected", "conversation_id": conversation_id}
+
+
+@app.get("/chat/{conversation_id}/results", dependencies=[Depends(require_api_key)])
+async def get_chat_results(conversation_id: str):
+    """Poll for task results from an approved plan."""
+    intent_id = await conductor.redis.get(f"chat_intent:{conversation_id}")
+    if not intent_id:
+        return {"status": "no_intent", "results": []}
+
+    # Get all results for this intent
+    raw_results = await conductor.redis.lrange(f"intent_results:{intent_id}", 0, -1)
+    results = [json.loads(r) for r in raw_results]
+
+    # Count expected tasks
+    tasks = []
+    async for key in conductor.redis.scan_iter(match="task:*"):
+        task_raw = await conductor.redis.get(key)
+        if task_raw:
+            task = json.loads(task_raw)
+            if task.get('intent_id') == intent_id:
+                tasks.append(task)
+
+    total = len(tasks)
+    done = sum(1 for t in tasks if t.get('status') in ('completed', 'failed', 'blocked'))
+
+    return {
+        "status": "complete" if done >= total and total > 0 else "pending",
+        "tasks_total": total,
+        "tasks_done": done,
+        "results": results,
+    }
 
 
 @app.get("/chat/{conversation_id}", dependencies=[Depends(require_api_key)])

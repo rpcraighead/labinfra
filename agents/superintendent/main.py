@@ -103,9 +103,11 @@ class SuperintendentAgent(BaseAgent):
         }
 
     def _list_vms(self, params: dict) -> dict:
-        """List all VMs across all nodes."""
+        """List all VMs across all nodes. Supports filters: node, status, name."""
         self._require_proxmox()
         node_filter = params.get('node', '')
+        status_filter = params.get('status', '')
+        name_filter = params.get('name', '').lower()
         all_vms = []
 
         nodes = self.proxmox.nodes.get()
@@ -116,10 +118,19 @@ class SuperintendentAgent(BaseAgent):
             try:
                 vms = self.proxmox.nodes(node_name).qemu.get()
                 for vm in vms:
+                    vm_status = vm.get('status', 'unknown')
+                    vm_name = vm.get('name', '')
+
+                    # Apply filters
+                    if status_filter and status_filter != vm_status:
+                        continue
+                    if name_filter and name_filter not in ('all', '') and name_filter not in vm_name.lower():
+                        continue
+
                     all_vms.append({
                         "vmid": vm['vmid'],
-                        "name": vm.get('name', ''),
-                        "status": vm.get('status', 'unknown'),
+                        "name": vm_name,
+                        "status": vm_status,
                         "node": node_name,
                         "cpus": vm.get('cpus', 0),
                         "mem_max_gb": round(vm.get('maxmem', 0) / (1024**3), 1),
@@ -129,7 +140,7 @@ class SuperintendentAgent(BaseAgent):
             except Exception as e:
                 self.logger.warning(f"Failed to list VMs on {node_name}: {e}")
 
-        return {"vms": all_vms}
+        return {"vms": all_vms, "count": len(all_vms)}
 
     def _vm_status(self, params: dict) -> dict:
         """Get detailed status for a specific VM."""

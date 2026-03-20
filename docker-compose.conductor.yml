@@ -18,6 +18,10 @@ services:
       CONDUCTOR_API_KEY: ${CONDUCTOR_API_KEY:-}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b-nothink}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
       AGENT_CONFIG: /etc/conductor/config.yaml
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:
@@ -25,6 +29,7 @@ services:
     volumes:
       - ./agents/conductor/config.yaml:/etc/conductor/config.yaml:ro
       - ./agents/conductor/static:/app/static:ro
+      - ./context/lab-context.md:/etc/conductor/context.md:ro
     networks:
       - swarm-net
     depends_on:
