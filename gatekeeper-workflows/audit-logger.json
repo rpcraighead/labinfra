@@ -1,0 +1,65 @@
+{
+  "name": "Gatekeeper - Audit Logger",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "audit-log",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "audit-webhook",
+      "name": "Receive Audit Event",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300],
+      "typeVersion": 2,
+      "webhookId": "audit-log"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO audit_log (timestamp, event_type, agent, task_id, intent_id, details) VALUES ('{{ $json.body.timestamp }}', '{{ $json.body.message_type }}', '{{ $json.body.sender }}', '{{ $json.body.task_id }}', '{{ $json.body.intent_id }}', '{{ JSON.stringify($json.body) }}')",
+        "options": {}
+      },
+      "id": "write-db",
+      "name": "Write to Audit DB",
+      "type": "n8n-nodes-base.postgres",
+      "position": [460, 300],
+      "typeVersion": 2.5,
+      "credentials": {
+        "postgres": {
+          "id": "audit-postgres",
+          "name": "Audit PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"logged\", \"task_id\": \"{{ $json.body.task_id }}\"}",
+        "options": {}
+      },
+      "id": "respond-logged",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [680, 300],
+      "typeVersion": 1.1
+    }
+  ],
+  "connections": {
+    "Receive Audit Event": {
+      "main": [
+        [{"node": "Write to Audit DB", "type": "main", "index": 0}]
+      ]
+    },
+    "Write to Audit DB": {
+      "main": [
+        [{"node": "Respond OK", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{"name": "gatekeeper"}, {"name": "audit"}]
+}

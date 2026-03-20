@@ -1,0 +1,157 @@
+{
+  "name": "Gatekeeper - Approval Response Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "approve-response",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "response-webhook",
+      "name": "Approval Response",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300],
+      "typeVersion": 2,
+      "webhookId": "approve-response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-approve",
+              "leftValue": "={{ $json.query.decision }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-decision",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "position": [460, 300],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://conductor:8000/gatekeeper/callback",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "task_id",
+              "value": "={{ $json.query.task_id }}"
+            },
+            {
+              "name": "decision",
+              "value": "approved"
+            },
+            {
+              "name": "decided_at",
+              "value": "={{ new Date().toISOString() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "notify-approved",
+      "name": "Notify Conductor (Approved)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [680, 180],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://conductor:8000/gatekeeper/callback",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "task_id",
+              "value": "={{ $json.query.task_id }}"
+            },
+            {
+              "name": "decision",
+              "value": "rejected"
+            },
+            {
+              "name": "decided_at",
+              "value": "={{ new Date().toISOString() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "notify-rejected",
+      "name": "Notify Conductor (Rejected)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [680, 420],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "=Task {{ $json.query.task_id }} APPROVED. You may close this tab.",
+        "options": {}
+      },
+      "id": "respond-approved",
+      "name": "Respond Approved",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [900, 180],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "=Task {{ $json.query.task_id }} REJECTED. The agent has been notified.",
+        "options": {}
+      },
+      "id": "respond-rejected",
+      "name": "Respond Rejected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [900, 420],
+      "typeVersion": 1.1
+    }
+  ],
+  "connections": {
+    "Approval Response": {
+      "main": [
+        [{"node": "Approved?", "type": "main", "index": 0}]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [{"node": "Notify Conductor (Approved)", "type": "main", "index": 0}],
+        [{"node": "Notify Conductor (Rejected)", "type": "main", "index": 0}]
+      ]
+    },
+    "Notify Conductor (Approved)": {
+      "main": [
+        [{"node": "Respond Approved", "type": "main", "index": 0}]
+      ]
+    },
+    "Notify Conductor (Rejected)": {
+      "main": [
+        [{"node": "Respond Rejected", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{"name": "gatekeeper"}, {"name": "approval"}]
+}

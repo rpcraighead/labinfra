@@ -1,4 +1,4 @@
-# Agent Swarm - Phase 3: Subagents (Superintendent, Mercury)
+# Agent Swarm - Phase 3: Subagents (Superintendent, Mercury, Sapper, DaVinci)
 # Extends infra + conductor with real infrastructure-connected agents.
 #
 # Usage:
@@ -17,6 +17,13 @@ services:
       PROXMOX_TOKEN_NAME: ${PROXMOX_TOKEN_NAME:-}
       PROXMOX_TOKEN_VALUE: ${PROXMOX_TOKEN_VALUE:-}
       PROXMOX_PASSWORD: ${PROXMOX_PASSWORD:-}
+      PROXMOX_VERIFY_SSL: ${PROXMOX_VERIFY_SSL:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SUPERINTENDENT_SMTP_USER:-superintendent@mail.rpc-cyberflight.com}
+      SMTP_PASSWORD: ${SUPERINTENDENT_SMTP_PASSWORD:-}
+      AGENT_EMAIL: superintendent@mail.rpc-cyberflight.com
+      NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - swarm-net
@@ -66,6 +73,80 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+  davinci:
+    build:
+      context: ./agents
+      dockerfile: davinci/Dockerfile
+    container_name: davinci-codegen
+    environment:
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b-nothink}
+      CODE_REPO_URL: ${CODE_REPO_URL:-}
+      WORKSPACE_PATH: /workspace
+      TEMPLATE_DIR: /app/templates
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${DAVINCI_SMTP_USER:-davinci@mail.rpc-cyberflight.com}
+      SMTP_PASSWORD: ${DAVINCI_SMTP_PASSWORD:-}
+      AGENT_EMAIL: davinci@mail.rpc-cyberflight.com
+      NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - davinci_workspace:/workspace
+    networks:
+      - swarm-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      conductor:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  sapper:
+    build:
+      context: ./agents
+      dockerfile: sapper/Dockerfile
+    container_name: sapper-network
+    environment:
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      FIREWALL_ENDPOINT: ${FIREWALL_ENDPOINT:-}
+      SSH_KEY_PATH: /secrets/ssh_key
+      SSH_USER: ${SAPPER_SSH_USER:-root}
+      DEFAULT_GATEWAY: ${DEFAULT_GATEWAY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SAPPER_SMTP_USER:-sapper@mail.rpc-cyberflight.com}
+      SMTP_PASSWORD: ${SAPPER_SMTP_PASSWORD:-}
+      AGENT_EMAIL: sapper@mail.rpc-cyberflight.com
+      NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ${SAPPER_SSH_KEY:-./secrets/sapper_ssh_key}:/secrets/ssh_key:ro
+    networks:
+      - swarm-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      conductor:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  davinci_workspace:
 
 networks:
   swarm-net:

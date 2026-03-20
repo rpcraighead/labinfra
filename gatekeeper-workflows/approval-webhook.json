@@ -1,0 +1,197 @@
+{
+  "name": "Gatekeeper - Task Approval Webhook",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "approve-task",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-receive",
+      "name": "Receive Approval Request",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300],
+      "typeVersion": 2,
+      "webhookId": "approve-task"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-action",
+              "leftValue": "={{ $json.body.operation }}",
+              "rightValue": "create_vm,delete_vm,execute_command,modify_network,configure_firewall",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "check-dangerous",
+      "name": "Is Dangerous Action?",
+      "type": "n8n-nodes-base.if",
+      "position": [460, 300],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "set-approved",
+              "name": "approved",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "set-reason",
+              "name": "reason",
+              "value": "Action is not in the dangerous-action list",
+              "type": "string"
+            },
+            {
+              "id": "set-task-id",
+              "name": "task_id",
+              "value": "={{ $json.body.task_id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "auto-approve",
+      "name": "Auto-Approve (Safe)",
+      "type": "n8n-nodes-base.set",
+      "position": [680, 180],
+      "typeVersion": 3.4
+    },
+    {
+      "parameters": {
+        "fromEmail": "gatekeeper@mail.rpc-cyberflight.com",
+        "toEmail": "={{ $env.NOTIFY_EMAIL }}",
+        "subject": "=🔒 Approval Required: {{ $json.body.operation }} (task {{ $json.body.task_id }})",
+        "emailType": "text",
+        "message": "=A dangerous operation requires your approval.\n\nOperation: {{ $json.body.operation }}\nAgent: {{ $json.body.target_agent }}\nTask ID: {{ $json.body.task_id }}\nIntent ID: {{ $json.body.intent_id }}\nParameters: {{ JSON.stringify($json.body.parameters, null, 2) }}\n\nApprove: {{ $env.GATEKEEPER_URL }}/webhook/approve-response?task_id={{ $json.body.task_id }}&decision=approve\nReject: {{ $env.GATEKEEPER_URL }}/webhook/approve-response?task_id={{ $json.body.task_id }}&decision=reject",
+        "options": {}
+      },
+      "id": "send-approval-email",
+      "name": "Send Approval Email",
+      "type": "n8n-nodes-base.emailSend",
+      "position": [680, 420],
+      "typeVersion": 2.1,
+      "credentials": {
+        "smtp": {
+          "id": "gatekeeper-smtp",
+          "name": "Gatekeeper SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "set-pending",
+              "name": "approved",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "set-status",
+              "name": "status",
+              "value": "pending_approval",
+              "type": "string"
+            },
+            {
+              "id": "set-task-id2",
+              "name": "task_id",
+              "value": "={{ $json.body.task_id }}",
+              "type": "string"
+            },
+            {
+              "id": "set-msg",
+              "name": "message",
+              "value": "Approval email sent. Awaiting human decision.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "pending-response",
+      "name": "Set Pending Response",
+      "type": "n8n-nodes-base.set",
+      "position": [900, 420],
+      "typeVersion": 3.4
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "respond-safe",
+      "name": "Respond (Safe)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [900, 180],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "respond-pending",
+      "name": "Respond (Pending)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [1120, 420],
+      "typeVersion": 1.1
+    }
+  ],
+  "connections": {
+    "Receive Approval Request": {
+      "main": [
+        [{"node": "Is Dangerous Action?", "type": "main", "index": 0}]
+      ]
+    },
+    "Is Dangerous Action?": {
+      "main": [
+        [{"node": "Send Approval Email", "type": "main", "index": 0}],
+        [{"node": "Auto-Approve (Safe)", "type": "main", "index": 0}]
+      ]
+    },
+    "Auto-Approve (Safe)": {
+      "main": [
+        [{"node": "Respond (Safe)", "type": "main", "index": 0}]
+      ]
+    },
+    "Send Approval Email": {
+      "main": [
+        [{"node": "Set Pending Response", "type": "main", "index": 0}]
+      ]
+    },
+    "Set Pending Response": {
+      "main": [
+        [{"node": "Respond (Pending)", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{"name": "gatekeeper"}, {"name": "approval"}]
+}
