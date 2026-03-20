@@ -49,7 +49,15 @@ agents:
         - configure_network
         - update_firewall
         - modify_routes
-        - apply_policy
+        - fw_status
+        - fw_list_zones
+        - fw_list_rules
+        - fw_list_redirects
+        - fw_add_rule
+        - fw_delete_rule
+        - fw_add_redirect
+        - fw_delete_redirect
+        - fw_add_forwarding
       maxConcurrentTasks: 2
       timeoutSeconds: 120
       retryPolicy:
@@ -183,6 +191,52 @@ taskRouting:
       task: configure_network
       requiredConstraints: []
 
+  # OpenWrt firewall operations (GL-MT6000)
+  fw_status:
+    - agent: sapper
+      task: fw_status
+      requiredConstraints: []
+
+  fw_list_zones:
+    - agent: sapper
+      task: fw_list_zones
+      requiredConstraints: []
+
+  fw_list_rules:
+    - agent: sapper
+      task: fw_list_rules
+      requiredConstraints: []
+
+  fw_list_redirects:
+    - agent: sapper
+      task: fw_list_redirects
+      requiredConstraints: []
+
+  fw_add_rule:
+    - agent: sapper
+      task: fw_add_rule
+      requiredConstraints: []
+
+  fw_delete_rule:
+    - agent: sapper
+      task: fw_delete_rule
+      requiredConstraints: []
+
+  fw_add_redirect:
+    - agent: sapper
+      task: fw_add_redirect
+      requiredConstraints: []
+
+  fw_delete_redirect:
+    - agent: sapper
+      task: fw_delete_redirect
+      requiredConstraints: []
+
+  fw_add_forwarding:
+    - agent: sapper
+      task: fw_add_forwarding
+      requiredConstraints: []
+
 # Constraints and enforcement
 constraints:
   builtIn:
@@ -215,6 +269,11 @@ gatekeeper:
     - execute_command
     - modify_network
     - configure_firewall
+    - fw_add_rule
+    - fw_delete_rule
+    - fw_add_redirect
+    - fw_delete_redirect
+    - fw_add_forwarding
   timeout_seconds: 60
   reverifyInterval: 300
 
