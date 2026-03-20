@@ -19,9 +19,9 @@ services:
       FAILURE_RATE_THRESHOLD: ${FAILURE_RATE_THRESHOLD:-0.5}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      AGENT_EMAIL: monitor@rpc-cyberflight.com
+      SMTP_USER: ${MONITOR_SMTP_USER:-monitor@mail.rpc-cyberflight.com}
+      SMTP_PASSWORD: ${MONITOR_SMTP_PASSWORD:-}
+      AGENT_EMAIL: monitor@mail.rpc-cyberflight.com
       NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
@@ -51,9 +51,9 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b-nothink}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      AGENT_EMAIL: scribe@rpc-cyberflight.com
+      SMTP_USER: ${SCRIBE_SMTP_USER:-scribe@mail.rpc-cyberflight.com}
+      SMTP_PASSWORD: ${SCRIBE_SMTP_PASSWORD:-}
+      AGENT_EMAIL: scribe@mail.rpc-cyberflight.com
       NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
@@ -84,9 +84,9 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b-nothink}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      AGENT_EMAIL: judge@rpc-cyberflight.com
+      SMTP_USER: ${JUDGE_SMTP_USER:-judge@mail.rpc-cyberflight.com}
+      SMTP_PASSWORD: ${JUDGE_SMTP_PASSWORD:-}
+      AGENT_EMAIL: judge@mail.rpc-cyberflight.com
       NOTIFY_EMAIL: ${NOTIFY_EMAIL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:

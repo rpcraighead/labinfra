@@ -1,2 +1,7 @@
 .claude/
 *.exe
+.env
+secrets/
+
+# Redaction script contains real IP mappings — keep on Gitea only
+scripts/redact_ips.py
