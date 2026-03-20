@@ -1,0 +1,48 @@
+# Agent Swarm - Phase 2: Conductor (Orchestrator)
+# Extends infra with the Conductor API and web UI.
+#
+# Usage:
+#   docker compose -f docker-compose.infra.yml -f docker-compose.conductor.yml up -d
+
+services:
+  conductor:
+    build:
+      context: ./agents
+      dockerfile: conductor/Dockerfile
+    container_name: conductor-orchestrator
+    environment:
+      INTENT_BROKER_URL: amqp://intent-broker:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      AUDIT_DB_URL: postgresql://auditlog:${POSTGRES_PASSWORD}@postgres:5432/swarm_audit
+      GATEKEEPER_URL: http://gatekeeper:5678
+      CONDUCTOR_API_KEY: ${CONDUCTOR_API_KEY:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b-nothink}
+      AGENT_CONFIG: /etc/conductor/config.yaml
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./agents/conductor/config.yaml:/etc/conductor/config.yaml:ro
+      - ./agents/conductor/static:/app/static:ro
+    networks:
+      - swarm-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  swarm-net:
+    external: true
+    name: agent-swarm_swarm-net

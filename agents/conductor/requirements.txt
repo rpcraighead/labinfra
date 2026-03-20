@@ -1,0 +1,11 @@
+# Conductor requirements
+fastapi>=0.104,<1
+uvicorn[standard]>=0.24,<1
+pydantic>=2.5,<3
+aio-pika>=9.4,<10
+redis>=5.0,<6
+httpx>=0.25,<1
+psycopg[binary]>=3.1,<4
+prometheus-client>=0.19,<1
+PyYAML>=6.0,<7
+aiosmtplib>=3.0,<4
