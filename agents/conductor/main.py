@@ -773,35 +773,6 @@ RULES:
                 raise HTTPException(status_code=502, detail="OpenAI API returned no choices")
             return choices[0].get('message', {}).get('content', '')
 
-    def _fixup_action(self, plan: dict, user_message: str) -> dict:
-        """Correct common LLM misrouting. The LLM often picks configure_network
-        as a catch-all for router queries that should use specific fw_* actions."""
-        action = plan.get('action', '')
-        msg = user_message.lower()
-
-        if action == 'configure_network':
-            # Map to the right fw_* action based on keywords in the user message
-            keyword_map = [
-                (['dhcp', 'lease', 'client'], 'fw_dhcp_leases'),
-                (['log', 'syslog', 'logread', 'dmesg'], 'fw_logs'),
-                (['move', 'reorder', 'position', 'priority'], 'fw_move_rule'),
-                (['edit', 'modify', 'change', 'update'], 'fw_edit_rule'),
-                (['rule', 'traffic', 'block', 'allow', 'drop', 'reject'], 'fw_list_rules'),
-                (['zone'], 'fw_list_zones'),
-                (['redirect', 'port forward', 'dnat'], 'fw_list_redirects'),
-                (['forward'], 'fw_list_forwarding'),
-                (['status', 'overview', 'firewall'], 'fw_status'),
-                (['ping'], 'ping_test'),
-                (['interface', 'route', 'ip addr'], 'network_status'),
-            ]
-            for keywords, new_action in keyword_map:
-                if any(kw in msg for kw in keywords):
-                    logger.info(f"Action fixup: {action} -> {new_action} (matched: {keywords})")
-                    plan['action'] = new_action
-                    break
-
-        return plan
-
     async def chat(self, conversation_id: str, user_message: str) -> dict:
         """Process a chat message through the configured LLM and return a response with optional plan."""
         # Load or create conversation history
@@ -836,8 +807,6 @@ RULES:
         if json_match:
             try:
                 plan = json.loads(json_match.group(1))
-                # Fix LLM misrouting: configure_network is for Linux hosts only
-                plan = self._fixup_action(plan, user_message)
                 status = "awaiting_approval"
                 # Store the pending plan
                 await self.redis.setex(
