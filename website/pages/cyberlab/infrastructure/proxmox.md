@@ -44,7 +44,7 @@ The NFS share (`usbdisk`) is key — it provides shared storage across all nodes
 |------|------|------|------|-----|------|----|----|--------|
 | 100 | RonClaw | pve1 | 2 | 8 GB | 32 GB | Linux | 10.0.8.10 | Running |
 | 101 | BethClaw | pve1 | 2 | 8 GB | 32 GB | Linux | — | Stopped |
-| 102 | BigBrain | bighost | 12 | 40 GB | 256 GB | Linux | 10.0.8.50 | Running |
+| 102 | BigBrain | bighost | 12 | 16 GB | 256 GB | Linux | 10.0.8.55 | Running |
 | 103 | cainfra01 | pve1 | 2 | 8 GB | 128 GB | Rocky Linux 10.1 | 10.0.8.121 | Running |
 | 104 | cadc02 | pve2 | 4 | 12 GB | 256 GB | Windows | 10.0.8.132 | Running |
 | 105 | CADC01 | pve1 | 4 | 16 GB | — | Win Server 2019 | 10.0.8.189 | Running |
@@ -59,7 +59,7 @@ The RTX 4070 on bighost is passed directly to VM 102 (BigBrain) for GPU-accelera
 - **GPU:** NVIDIA GeForce RTX 4070 (AD104)
 - **PCI address:** 0000:01:00.0
 - **CPU mode:** host (full passthrough for best performance)
-- **Purpose:** Ollama LLM server running Qwen3 models (8B, 14B, 32B parameter)
+- **Purpose:** Ollama LLM server running Qwen 3.5 models, Frigate NVR, n8n automation
 - **Autostart:** Yes — BigBrain comes up automatically on node boot
 
 ### What is GPU Passthrough?

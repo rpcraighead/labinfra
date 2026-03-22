@@ -45,6 +45,8 @@ nav:
       - "One Old PC: Installing Proxmox": blog/build-log/01-one-old-pc.md
       - "Active Directory in Your Living Room": blog/build-log/02-active-directory.md
       - "See Everything: LibreNMS & Graylog": blog/build-log/03-monitoring-stack.md
+      - "BigBrain Gets Smarter: Ollama 0.18 & Qwen 3.5": blog/build-log/04-bigbrain-upgrade.md
+      - "md2docx: Because Not Everyone Reads Markdown": blog/build-log/05-md2docx.md
 
 markdown_extensions:
   - tables
