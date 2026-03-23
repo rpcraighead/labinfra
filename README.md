@@ -29,7 +29,7 @@ The CyberFlight lab is the answer to those questions — built, broken, and rebu
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    CYBERFLIGHT LAB (DMZ)                    │
-│                     192.168.8.0/24                          │
+│                     192.168.x.x/24                          │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │           Proxmox VE Cluster (3 nodes)               │   │
